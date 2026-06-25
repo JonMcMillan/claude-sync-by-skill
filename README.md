@@ -1,0 +1,134 @@
+# claude-sync-by-skill
+
+**Unify your Claude Code environment across machines — memory, plans, settings, secrets,
+and your skills — using just three skill commands.**
+
+You work on one machine, run **`/sync-env-up`** to push your environment to a shared
+**sync folder**, then run **`/sync-env-down`** on another machine to bring it over. The
+two machines stay one unified environment. **`/sync-envs`** shows a read-only preview of
+what would change, in either direction, without touching anything.
+
+> **Status:** early, private development. Cross-platform (Windows/macOS/Linux), pure
+> Python 3 standard library, no dependencies.
+
+---
+
+## The idea: point it at a folder, sync that folder however you like
+
+The engine is **transport-agnostic**. It only does file operations against a single
+**sync folder** that *you* choose at setup. How that folder gets mirrored between your
+machines is entirely up to you:
+
+- a cloud drive — Google Drive, OneDrive, Dropbox, iCloud
+- a peer-to-peer tool — Syncthing, Resilio
+- a USB stick you carry between machines
+- a personal or company **SAN / network share** (for a fully private, high-security setup)
+- `rsync`/`scp` to your own server
+
+The tool never assumes a backend, never uploads anywhere on its own, and bundles no
+credentials. Your choice of folder *is* your choice of security and transport.
+
+---
+
+## How it works
+
+There is **one unified environment**. The sync folder holds the shared canonical copy;
+each machine holds a working copy. Three commands:
+
+| Command | Direction | What it does |
+|---|---|---|
+| `/sync-env-up` | local → folder | Push your current machine's environment to the sync folder (overwrite/update the unified copy), with version + deletion checks. |
+| `/sync-env-down` | folder → local | Bring the unified environment onto this machine (overwrite/update local). |
+| `/sync-envs` | — | Read-only preview of what up *would* push and down *would* pull, plus the device roster. Changes nothing. |
+
+What's unified: **memory** (incl. session transcripts — resume a conversation on any
+machine), **plans**, **settings**, your **skills**, and (opt-in) **secrets**. The sync
+tool's *own* skill folders are the only thing managed by git instead — see *Updates*.
+
+### Safety: overwrites and deletions are intentional and reviewed
+
+Syncing means overwriting and propagating deletions — but never by accident:
+
+- **Direction declares the source of truth.** `up` trusts your local machine; `down`
+  trusts the folder. No guessing who's authoritative.
+- **A per-machine baseline** records what *you* last reconciled with the folder. A file
+  that's in the folder but **not in your baseline** is something another machine added
+  that you simply haven't pulled yet — it is **never** mistaken for a deletion. (This is
+  the exact failure mode that motivated this project; see *Design notes*.)
+- **Everything is previewed first.** Every run prints a summary; any deletion is flagged
+  as destructive and requires confirmation. Conflicts (both sides changed) are never
+  auto-resolved — you decide.
+- **Deletions go to trash**, under `<syncFolder>/.trash/<timestamp>/`, and are
+  recoverable.
+
+### First sync (joining a folder)
+
+The first time a machine points at a populated sync folder, the engine **analyzes the
+entire environment first** for full context, then walks **item by item**, showing each
+difference and asking whether to keep your local copy, take the folder's copy, or skip.
+That's also where you can exclude anything you don't want unified. After that, ongoing
+`up`/`down` use the quick summary-and-confirm flow.
+
+---
+
+## Install
+
+Requires **Python 3.8+** and **git**.
+
+```bash
+python3 install.py
+```
+
+The installer clones this repo into your Claude skills directory, runs setup (where you
+pick the sync folder and join/initialize it), and materializes the `sync-env-up` /
+`sync-env-down` skills. Then, in Claude Code, run `/sync-env-down` (or `/sync-env-up` on
+your first/primary machine) to begin.
+
+---
+
+## Updates
+
+Only the **sync tool's own skill folders** (`sync-envs`, `sync-env-up`, `sync-env-down`)
+are managed by git — so every machine runs the same engine version, and the tool's `.git`
+never ends up inside your cloud-mirrored folder. Each run checks GitHub and, if a newer
+version exists, offers to `git pull` before continuing. Everything *else* about your
+environment — including all your other skills — syncs through the sync folder.
+
+---
+
+## Security
+
+- **Pure Python standard library — zero third-party dependencies**, so there is no
+  dependency supply chain to trust.
+- The engine **runs from its git-managed folder, never from the sync folder** — synced
+  data is only ever *copied*, never executed.
+- External commands (only `git`) are invoked with argument lists, never a shell.
+- State is plain JSON (no `pickle`/`eval`).
+- **Secrets** (`.env` files) are never printed; pushing them to the folder is **opt-in**
+  with a warning (because exposure depends on *your* transport), and pulled secrets are
+  written with `0600` permissions on POSIX.
+- State writes are atomic; symlinks are skipped by default.
+
+---
+
+## Design notes
+
+This started after a bidirectional auto-reconciler nearly trashed a day's work: it
+inferred "deleted" from a *shared* registry that recorded whichever machine last touched
+a file, so a brand-new file looked like a deletion to the other machine. The redesign
+keeps the cure simple — **directional commands + a per-machine baseline + a review step**
+— rather than trying to out-clever a two-way merge.
+
+## Offered to Anthropic / prior art
+
+Native cross-machine sync for Claude Code is a long-standing, popular request
+([anthropics/claude-code#22648](https://github.com/anthropics/claude-code/issues/22648),
+the dedup target for #6037, #19634, #13461, #12119, #57678). Its proposed
+`sync push` / `sync pull` / `sync status` UX matches this tool's up/down/status model.
+This project is released under **Apache-2.0** and **offered freely for Anthropic** (or
+anyone) to adopt, adapt, or use as a reference implementation. The goal is simply to help
+others with the same problem.
+
+## License
+
+[Apache License 2.0](LICENSE).

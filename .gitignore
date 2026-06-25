@@ -1,0 +1,21 @@
+# Machine-specific state — never committed (lives in the user's ~/.claude, not the repo)
+.sync-config.json
+.sync-baseline.json
+.sync-state.json
+.claude-sync.json
+.trash/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

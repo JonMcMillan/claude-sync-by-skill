@@ -1,0 +1,9 @@
+# Normalize line endings: store all text as LF in the repository.
+* text=auto eol=lf
+
+# POSIX shell scripts and Python must be LF (explicit for clarity).
+*.sh text eol=lf
+*.py text eol=lf
+
+# Windows batch launcher must be CRLF.
+*.cmd text eol=crlf
