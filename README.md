@@ -53,8 +53,7 @@ Syncing means overwriting and propagating deletions — but never by accident:
   trusts the folder. No guessing who's authoritative.
 - **A per-machine baseline** records what *you* last reconciled with the folder. A file
   that's in the folder but **not in your baseline** is something another machine added
-  that you simply haven't pulled yet — it is **never** mistaken for a deletion. (This is
-  the exact failure mode that motivated this project; see *Design notes*.)
+  that you simply haven't pulled yet — it is **never** mistaken for a deletion.
 - **Everything is previewed first.** Every run prints a summary; any deletion is flagged
   as destructive and requires confirmation. Conflicts (both sides changed) are never
   auto-resolved — you decide.
