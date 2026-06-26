@@ -35,22 +35,34 @@ platform-appropriate Python (`python3` on macOS/Linux; `py -3` or `python` on Wi
    SAN or UNC share, …). This tool does **not** mirror the folder; the user's own tool
    does. If they don't have one yet, help them pick a path.
 
-5. **Run setup (non-interactive):**
-   `python3 "<skills>/sync-envs/sync_engine.py" --setup --sync-root "<the folder>"`
+5. **Ask the user for their MAIN WORKING FOLDER** — the parent folder their projects live
+   under (e.g. `C:\dev`, `~/code`), **not** a specific project inside it. If they name a
+   project, suggest its parent. This is what lets the same project line up across machines
+   that use different paths (different drive or folder name). Explain plainly that this
+   syncs only Claude's *memory* of those projects, never the code inside them. It's
+   optional — if they don't want cross-machine project matching, skip it. On a machine
+   *joining* an existing folder, tell them it can be a different path than the other
+   machine's; projects beneath it are matched automatically.
+
+6. **Run setup (non-interactive):**
+   `python3 "<skills>/sync-envs/sync_engine.py" --setup --sync-root "<the folder>" --work-root "<their main working folder>"`
+   - Omit `--work-root` if they chose to skip cross-machine project matching.
    - Add `--device "<name>"` to override the device id (defaults to the hostname).
    - If it reports the folder *has files but is not a recognized claude-sync folder*,
      confirm with the user, then re-run adding `--yes` to initialize it there.
-   - On the **first** machine this creates the folder's identity; on **later** machines it
-     joins the existing folder.
+   - On the **first** machine this creates the folder's identity (and anchors the canonical
+     project root); on **later** machines it joins and maps onto the existing one.
 
-6. **Tell the user to reload/restart Claude Code** so the new slash commands appear:
+7. **Tell the user to reload/restart Claude Code** so the new slash commands appear:
    `/sync-envs` (read-only status), `/sync-env-up`, `/sync-env-down`. Newly added skills are
    not picked up by the client's slash menu until it reloads.
 
-7. **Recommend the next action:**
+8. **Recommend the next action:**
    - First/primary machine → run `/sync-env-up` to push the environment to the folder.
    - A new machine joining → run `/sync-env-down`; the first sync analyzes the whole
-     environment and performs **no deletions**, keeping local-only work.
+     environment and performs **no deletions**, keeping local-only work. After it pulls,
+     the tool prints the exact local path to open for each synced project (or use
+     `--scaffold` to pre-create those folders).
 
 ## Important
 
