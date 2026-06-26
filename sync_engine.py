@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import socket
 import subprocess
@@ -535,6 +536,160 @@ def apply_plan(direction, cfg, actions, baseline, state, confirm_deletions,
 
 
 # --------------------------------------------------------------------------- #
+# Tool-install hints (advisory)
+# --------------------------------------------------------------------------- #
+# On `down`, scan the transcripts just pulled from the folder for evidence that a CLI/tool
+# was installed during sessions on another machine, and surface a soft reminder so the user
+# can install the same here. Two signals, both from data we already sync:
+#   * commands actually run in Bash/PowerShell tool calls (high confidence), and
+#   * the USER's own text where they mention a manual terminal install (lower confidence).
+# Assistant prose is deliberately NOT scanned — it merely *discusses* installs and would
+# produce false positives. This is a best-effort nudge, never an automated install.
+TOOL_COMMAND_TOOLS = {"Bash", "PowerShell"}
+
+# package-manager invocations -> the (?P<pkg>...) being installed
+_PKG_PATTERNS = [
+    (r"npm\s+(?:i|install|add)\b[^\n;|&]*?(?:-g|--global)\s+(?P<pkg>[@\w][\w@/.\-]*)",
+     "npm -g"),
+    (r"pnpm\s+(?:add|install)\b[^\n;|&]*?(?:-g|--global)\s+(?P<pkg>[@\w][\w@/.\-]*)",
+     "pnpm -g"),
+    (r"yarn\s+global\s+add\s+(?P<pkg>[@\w][\w@/.\-]*)", "yarn global"),
+    (r"winget\s+install\s+(?:--id\s+)?(?P<pkg>[\w][\w.\-]*)", "winget"),
+    (r"(?:choco|scoop)\s+install\s+(?P<pkg>[\w][\w.\-]*)", "choco/scoop"),
+    (r"brew\s+install\s+(?P<pkg>[@\w][\w@/.\-]*)", "brew"),
+    (r"pipx\s+install\s+(?P<pkg>[\w][\w.\-]*)", "pipx"),
+    (r"cargo\s+install\s+(?P<pkg>[\w][\w.\-]*)", "cargo"),
+    (r"uv\s+tool\s+install\s+(?P<pkg>[\w][\w.\-]*)", "uv tool"),
+    (r"go\s+install\s+(?P<pkg>[@\w][\w@/.\-]*)", "go install"),
+    (r"gh\s+extension\s+install\s+(?P<pkg>[@\w][\w@/.\-]*)", "gh extension"),
+    (r"(?:sudo\s+)?(?:apt|apt-get|dnf|yum)\s+install\s+(?:-y\s+)?(?P<pkg>[\w][\w.+\-]*)",
+     "apt/dnf"),
+]
+# user prose: "...installed the wrangler CLI..." (only with a terminal/manual cue nearby)
+_NL_PATTERN = r"\binstalled\s+(?:the\s+)?(?P<pkg>[A-Za-z][\w.\-]{1,})(?:\s+CLI)?\b"
+_TERMINAL_CUES = ("terminal", "manually", "command line", "command-line", "powershell",
+                  "my shell", "outside claude", "outside of claude", "globally")
+# tokens that are never a tool worth flagging
+_TOOL_STOPWORDS = {
+    "the", "it", "them", "this", "that", "all", "everything", "stuff", "again",
+    "dependencies", "dependency", "deps", "packages", "package", "modules", "module",
+    "node", "npm", "pip", "python", "tool", "tools", "cli", "my", "your", "locally",
+    "globally", "latest", "version", "and", "a", "an", "some", "new",
+}
+
+
+_PKG_COMPILED = [(re.compile(rx, re.I), label) for rx, label in _PKG_PATTERNS]
+_NL_COMPILED = re.compile(_NL_PATTERN, re.I)
+_TOOL_TOKEN = re.compile(r"^[@A-Za-z0-9][\w@/.\-]*$")
+
+
+def _looks_like_tool(pkg: str) -> bool:
+    if not pkg or len(pkg) < 2 or pkg.lower() in _TOOL_STOPWORDS:
+        return False
+    return bool(_TOOL_TOKEN.match(pkg))
+
+
+def _binary_guess(pkg: str) -> str:
+    name = pkg.rsplit("/", 1)[-1].lstrip("@")
+    return name.split("@", 1)[0] or pkg
+
+
+def _tool_present(pkg: str) -> bool:
+    """Best-effort: is this tool already on PATH here? (package name ~ binary name)."""
+    return shutil.which(_binary_guess(pkg)) is not None
+
+
+def detect_install_hints_in_text(text: str, source: str):
+    """Yield (tool, label, evidence) install hints found in one command/text string."""
+    for rx, label in _PKG_COMPILED:
+        for m in rx.finditer(text):
+            pkg = m.group("pkg")
+            if _looks_like_tool(pkg):
+                yield (pkg, label, m.group(0).strip()[:80])
+    if source == "user-text" and any(cue in text.lower() for cue in _TERMINAL_CUES):
+        for m in _NL_COMPILED.finditer(text):
+            pkg = m.group("pkg")
+            if _looks_like_tool(pkg):
+                yield (pkg, "you mentioned", m.group(0).strip()[:80])
+
+
+def _iter_scannable_parts(obj):
+    """Yield (source, text) from a transcript line: ('command', cmd) for Bash/PowerShell
+    tool calls, ('user-text', text) for user-authored prose. Assistant prose is skipped."""
+    if not isinstance(obj, dict) or obj.get("type") not in ("user", "assistant"):
+        return
+    msg = obj.get("message")
+    if not isinstance(msg, dict):
+        return
+    content = msg.get("content")
+    if isinstance(content, str):
+        if obj.get("type") == "user":
+            yield ("user-text", content)
+        return
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "tool_use" and block.get("name") in TOOL_COMMAND_TOOLS:
+            cmd = (block.get("input") or {}).get("command")
+            if isinstance(cmd, str):
+                yield ("command", cmd)
+        elif btype == "text" and obj.get("type") == "user":
+            t = block.get("text")
+            if isinstance(t, str):
+                yield ("user-text", t)
+
+
+def scan_transcript_for_install_hints(path: Path):
+    hints = []
+    try:
+        with Path(path).open("r", encoding="utf-8-sig") as fh:
+            for line in fh:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                for source, text in _iter_scannable_parts(obj):
+                    hints.extend(detect_install_hints_in_text(text, source))
+    except OSError:
+        pass
+    return hints
+
+
+def gather_install_hints(paths, max_files: int = 500):
+    """Dedup install hints across the given transcripts, dropping tools already on PATH.
+    Returns a list of {tool, via, evidence} plus a flag if file scanning was capped."""
+    seen = {}
+    capped = len(list(paths)) > max_files
+    for p in list(paths)[:max_files]:
+        for pkg, via, evidence in scan_transcript_for_install_hints(p):
+            key = pkg.lower()
+            if key in seen or _tool_present(pkg):
+                continue
+            seen[key] = {"tool": pkg, "via": via, "evidence": evidence}
+    return list(seen.values()), capped
+
+
+def render_install_hints(hints, capped: bool) -> str:
+    if not hints:
+        return ""
+    out = [
+        "",
+        "It looks like some tools were installed during your previous sessions on",
+        "another machine. Based on what I could find, you may need to install these here:",
+    ]
+    for h in sorted(hints, key=lambda x: x["tool"].lower()):
+        out.append("  - {:<22} ({}: {})".format(h["tool"], h["via"], h["evidence"]))
+    out.append("(best-effort scan of synced transcripts - verify before installing; "
+               "some may not apply.)")
+    if capped:
+        out.append("(note: only the first batch of transcripts was scanned.)")
+    return "\n".join(out)
+
+
+# --------------------------------------------------------------------------- #
 # Definition file / device roster
 # --------------------------------------------------------------------------- #
 def touch_device(sync_root: Path, cfg: dict):
@@ -712,6 +867,17 @@ def cmd_sync(args, direction):
     if applied["conflicts"]:
         print("Conflicts were NOT changed. Re-run with --prefer local|folder to resolve.")
 
+    if direction == "down" and not args.no_tool_hints:
+        # Scan only the transcripts pulled THIS run (i.e. other-machine activity we didn't
+        # have) so the nudge is scoped and never re-nags once they're in sync.
+        pulled = [a.local_path for a in actions
+                  if a.item == "claude-memory" and a.kind == "copy_down"
+                  and str(a.local_path).endswith(".jsonl")]
+        hints, capped = gather_install_hints(pulled)
+        note = render_install_hints(hints, capped)
+        if note:
+            print(note)
+
 
 def cmd_setup(args):
     home = Path(args.claude_home) if args.claude_home else default_claude_home()
@@ -792,6 +958,8 @@ def build_parser():
                    help="resolve conflicts in favor of one side")
     p.add_argument("--push-secrets", action="store_true",
                    help="allow pushing secret files (.env) to the folder")
+    p.add_argument("--no-tool-hints", action="store_true",
+                   help="down: skip scanning pulled transcripts for tool-install reminders")
     p.add_argument("--claude-home", help="override the Claude home directory")
     p.add_argument("--sync-root", help="setup: sync folder path (non-interactive)")
     p.add_argument("--device", help="setup: device id (defaults to hostname)")
