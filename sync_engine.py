@@ -723,25 +723,30 @@ def cmd_setup(args):
     dev_root = existing.get("devRoot") or (
         str(detect_dev_root()) if detect_dev_root() else None)
 
-    # Choose the sync folder.
-    suggestions = suggest_sync_roots()
-    if suggestions:
-        print("\nDetected possible sync folders:")
-        for i, s in enumerate(suggestions, 1):
-            print("  {}. {}".format(i, s))
-        print("  (or type any path, including a USB/SAN/UNC path)")
-    chosen = existing.get("syncRoot", "")
-    raw = ask("Sync folder [{}]: ".format(chosen or "enter a path"), chosen)
-    if raw.isdigit() and 1 <= int(raw) <= len(suggestions):
-        sync_root = suggestions[int(raw) - 1] / "Claude"
+    # Choose the sync folder. --sync-root makes setup non-interactive (AI-driven /
+    # scripted installs); otherwise prompt with detected suggestions.
+    if args.sync_root:
+        sync_root = Path(args.sync_root)
     else:
-        sync_root = Path(raw)
-    if not raw and not chosen:
-        print("No sync folder given. Aborting.")
-        sys.exit(2)
+        suggestions = suggest_sync_roots()
+        if suggestions:
+            print("\nDetected possible sync folders:")
+            for i, s in enumerate(suggestions, 1):
+                print("  {}. {}".format(i, s))
+            print("  (or type any path, including a USB/SAN/UNC path)")
+        chosen = existing.get("syncRoot", "")
+        raw = ask("Sync folder [{}]: ".format(chosen or "enter a path"), chosen)
+        if raw.isdigit() and 1 <= int(raw) <= len(suggestions):
+            sync_root = suggestions[int(raw) - 1] / "Claude"
+        elif raw:
+            sync_root = Path(raw)
+        else:
+            print("No sync folder given. Aborting.")
+            sys.exit(2)
 
-    device = existing.get("device") or hostname()
-    device = ask("Device id [{}]: ".format(device), device)
+    device = args.device or existing.get("device") or hostname()
+    if not args.sync_root and not args.device:
+        device = ask("Device id [{}]: ".format(device), device)
 
     cfg = {
         "schemaVersion": SCHEMA_VERSION,
@@ -788,6 +793,8 @@ def build_parser():
     p.add_argument("--push-secrets", action="store_true",
                    help="allow pushing secret files (.env) to the folder")
     p.add_argument("--claude-home", help="override the Claude home directory")
+    p.add_argument("--sync-root", help="setup: sync folder path (non-interactive)")
+    p.add_argument("--device", help="setup: device id (defaults to hostname)")
     p.add_argument("--version", action="store_true", help="print version and exit")
     return p
 

@@ -59,6 +59,14 @@ class TestCli(unittest.TestCase):
         r = run_engine(["--status"], self.home_b)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_noninteractive_setup(self):
+        # AI-driven / scripted setup: no stdin, sync folder via --sync-root
+        r = run_engine(["--setup", "--sync-root", str(self.sync), "--device", "M1"],
+                       self.home_a)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((self.home_a / ".sync-config.json").exists())
+        self.assertTrue((self.sync / ".claude-sync.json").exists())
+
     def test_preview_makes_no_changes(self):
         self.setup_machine(self.home_a, "MACHINE-A")
         # preview up (no --apply) must not create anything in the folder
