@@ -128,7 +128,7 @@ def confirm(prompt: str, assume_yes: bool) -> bool:
 
 def ask(prompt: str, default: str = "") -> str:
     try:
-        ans = input(prompt).lstrip("﻿").strip()  # tolerate a stray BOM on stdin
+        ans = input(prompt).lstrip(chr(0xFEFF)).strip()  # tolerate a stray BOM on stdin
     except EOFError:
         ans = ""
     return ans or default
@@ -427,7 +427,7 @@ def render_plan(direction, cfg, actions, first_sync):
         direction, cfg["device"], cfg["syncRoot"])
     lines.append(header)
     if first_sync:
-        lines.append("FIRST SYNC for this machine — analyzing the full environment; "
+        lines.append("FIRST SYNC for this machine - analyzing the full environment; "
                      "no deletions will occur on a first sync.")
     if not interesting:
         lines.append("Everything is in sync. Nothing to do.")
@@ -449,7 +449,7 @@ def render_plan(direction, cfg, actions, first_sync):
                      "(pushSecrets is off).".format(len(secret_pushes)))
     dels = [a for a in interesting if a.kind in DESTRUCTIVE]
     if dels:
-        lines.append("WARNING: {} destructive deletion(s) — recoverable under "
+        lines.append("WARNING: {} destructive deletion(s) - recoverable under "
                      "<syncRoot>/.trash/.".format(len(dels)))
     return "\n".join(lines)
 
@@ -636,7 +636,7 @@ def version_check(skill_dir: Path):
     try:
         fetch = git(["fetch", "--quiet"], skill_dir)
         if fetch.returncode != 0:
-            print("(version check: could not reach GitHub — continuing offline)")
+            print("(version check: could not reach GitHub - continuing offline)")
             return
         head = git(["rev-parse", "HEAD"], skill_dir).stdout.strip()
         upstream = git(["rev-parse", "@{u}"], skill_dir).stdout.strip()
@@ -691,7 +691,7 @@ def cmd_sync(args, direction):
     print(render_plan(direction, cfg, actions, first_sync))
 
     if not args.apply:
-        print("\n(preview only — re-run with --apply to perform these changes)")
+        print("\n(preview only - re-run with --apply to perform these changes)")
         return
 
     has_dels = any(a.kind in DESTRUCTIVE for a in actions)
