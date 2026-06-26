@@ -8,6 +8,11 @@ You work on one machine, run **`/sync-env-up`** to push your environment to a sh
 two machines stay one unified environment. **`/sync-envs`** shows a read-only preview of
 what would change, in either direction, without touching anything.
 
+> **What it does *not* do:** it does **not** sync the contents of your project folders.
+> Your code, files, repos, and `node_modules` are never touched — that's what git is for.
+> This skill syncs only *Claude's* knowledge of a project (memory and transcripts), plus
+> your plans, settings, and skills — never the project itself.
+
 > **Status:** early, private development. Cross-platform (Windows/macOS/Linux), pure
 > Python 3 standard library, no dependencies.
 
@@ -44,6 +49,27 @@ each machine holds a working copy. Three commands:
 What's unified: **memory** (incl. session transcripts — resume a conversation on any
 machine), **plans**, **settings**, your **skills**, and (opt-in) **secrets**. The sync
 tool's *own* skill folders are the only thing managed by git instead — see *Updates*.
+
+### Your main working folder (different paths on different machines)
+
+Claude ties a project's memory to the **folder you work in** — the absolute path becomes
+the project's identity (`D:\dev` → `D--dev`, `C:\dev` → `C--dev`). So the *same* project
+worked at different paths on two machines would otherwise look like two unrelated
+projects and never line up.
+
+To fix this, at setup you name your **main working folder**: the parent your projects
+live under (e.g. `C:\dev`). Each machine can use its own path — a different drive **or a
+different folder name** — and the tool keeps a per-machine map so the folder holds one
+canonical copy while each machine materializes it under the key its own paths produce.
+New projects you create under that folder are matched automatically; you never register
+them by hand.
+
+Because the working folder doesn't need to exist to *receive* a sync (memory lives under
+`~/.claude`, separate from your code), after a `down` the tool prints the **exact local
+path** to open for each synced project — so you never mistype a folder name to "find" your
+context. `/sync-env-down --scaffold` pre-creates those empty folders for you. Naming a main
+working folder is optional; skip it and every project syncs under its literal per-machine
+key, exactly as before.
 
 ### Tool-install reminders
 

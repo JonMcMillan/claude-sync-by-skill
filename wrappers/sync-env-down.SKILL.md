@@ -26,10 +26,14 @@ the sibling `sync-envs` skill folder.
    Add `--prefer local` or `--prefer folder` to resolve conflicts the user decided on.
 5. **Secrets** are pulled normally (folder → local); pulled `.env` files get restrictive
    `0600` permissions on macOS/Linux. Never print secret contents.
-6. **Report** what was copied/deleted. If the engine prints a **tool-install reminder**
-   (CLIs/tools that were installed during sessions on another machine and aren't on this
-   machine's PATH), relay it to the user as a suggestion — it's advisory, not an action to
-   take automatically. `--no-tool-hints` suppresses the scan.
+6. **Report** what was copied/deleted. Two things the engine may also print, both worth
+   relaying:
+   - If a **main working folder** is configured, the exact local path to open for each
+     synced project — so the user doesn't guess/retype a folder name. `--scaffold`
+     pre-creates those empty working folders (it never writes code, only empty dirs).
+   - A **tool-install reminder** (CLIs/tools installed during sessions on another machine
+     and not on this machine's PATH) — relay it as an advisory suggestion, not an action
+     to take automatically. `--no-tool-hints` suppresses the scan.
 
 ## First sync
 

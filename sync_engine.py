@@ -36,8 +36,8 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "1.0.0"
-SCHEMA_VERSION = 1
+VERSION = "1.1.0"
+SCHEMA_VERSION = 2
 MTIME_TOLERANCE = 2.0  # seconds; FAT/network-drive slack
 SYNC_FOLDER_TYPE = "claude-sync-by-skill"
 
@@ -142,6 +142,48 @@ def within_root(root: Path, candidate: Path) -> bool:
         return True
     except (ValueError, OSError):
         return False
+
+
+# --------------------------------------------------------------------------- #
+# Logical project roots (per-machine path aliasing)
+# --------------------------------------------------------------------------- #
+# Claude Code keys each project's memory/transcripts by the sanitized absolute
+# working-directory path (D:\dev -> "D--dev", C:\dev -> "C--dev"). Two machines
+# working the "same" project at different paths therefore get different keys and
+# never line up. A per-machine *root map* (localPrefix -> canonicalPrefix) lets the
+# folder store one canonical tree while each machine materializes it under the key
+# its own cwd will produce. Empty map => identity => byte-for-byte legacy behavior.
+def sanitize_path_to_key(path) -> str:
+    """Approximate Claude Code's project-key derivation: the working path with path
+    punctuation (\\ / : . and spaces) flattened to '-'. Used only to derive the local
+    key PREFIX for a configured work root; exact subpaths come from the captured cwd
+    (see read_project_cwd), never by reversing a lossy key."""
+    return "".join("-" if c in "\\/:. " else c for c in str(path))
+
+
+def remap_first_segment(rel: str, mapping: "dict[str, str]") -> str:
+    """Rewrite the first path segment (the project key) of a POSIX relpath via
+    `mapping` (prefix -> prefix), matched on a segment boundary so 'D--dev' rewrites
+    'D--dev' and 'D--dev-app' but never 'D--development'. Longest prefix wins. Returns
+    `rel` unchanged when nothing matches."""
+    if not mapping:
+        return rel
+    projkey, sep, rest = rel.partition("/")
+    for src, dst in sorted(mapping.items(), key=lambda kv: -len(kv[0])):
+        if projkey == src:
+            return dst + sep + rest
+        if projkey.startswith(src + "-"):
+            return dst + projkey[len(src):] + sep + rest
+    return rel
+
+
+def build_root_map(cfg: dict) -> "dict[str, str]":
+    """The local->canonical project-key map for this machine, or {} (identity)."""
+    work_key = cfg.get("workKey")
+    canonical = cfg.get("canonicalKey")
+    if work_key and canonical:
+        return {work_key: canonical}
+    return {}
 
 
 # --------------------------------------------------------------------------- #
@@ -264,13 +306,27 @@ def suggest_sync_roots() -> "list[Path]":
 # Manifest
 # --------------------------------------------------------------------------- #
 class Item:
-    def __init__(self, item_id, local, sync, kind, secret=False, exclude=None):
+    def __init__(self, item_id, local, sync, kind, secret=False, exclude=None,
+                 rootmap=None):
         self.id = item_id
         self.local = Path(local)
         self.sync = Path(sync)
         self.kind = kind  # "dir" | "file"
         self.secret = secret
         self.exclude = set(exclude or [])
+        # local->canonical project-key map; non-empty only for the memory item.
+        self.rootmap = dict(rootmap or {})
+
+    def to_canon(self, rel: str) -> str:
+        """Local relpath -> canonical relpath (as stored in the sync folder)."""
+        return remap_first_segment(rel, self.rootmap) if self.rootmap else rel
+
+    def to_local(self, rel: str) -> str:
+        """Canonical relpath -> this machine's local relpath."""
+        if not self.rootmap:
+            return rel
+        inverse = {v: k for k, v in self.rootmap.items()}
+        return remap_first_segment(rel, inverse)
 
 
 def build_manifest(cfg: dict) -> "list[Item]":
@@ -282,7 +338,8 @@ def build_manifest(cfg: dict) -> "list[Item]":
     items = [
         Item("claude-skills", home / "skills", sync / "claude-skills", "dir",
              exclude=skill_exclude),
-        Item("claude-memory", home / "projects", sync / "claude-memory", "dir"),
+        Item("claude-memory", home / "projects", sync / "claude-memory", "dir",
+             rootmap=build_root_map(cfg)),
         Item("claude-plans", home / "plans", sync / "claude-plans", "dir"),
         Item("claude-settings", home / "settings.json",
              sync / "claude-settings" / "settings.json", "file"),
@@ -378,20 +435,25 @@ def compute_plan(direction, cfg, baseline) -> "list[Action]":
     for item in build_manifest(cfg):
         local = enumerate_side(item.local, item.kind, item.exclude)
         upstream = enumerate_side(item.sync, item.kind, item.exclude)
-        for rel in sorted(set(local) | set(upstream)):
-            regkey = "{}/{}".format(item.id, rel)
-            has_local = rel in local
-            has_sync = rel in upstream
-            lm = mtime_of(local[rel]) if has_local else None
-            sm = mtime_of(upstream[rel]) if has_sync else None
+        # Pair the two sides in the CANONICAL namespace. The folder side is already
+        # canonical; local relpaths are mapped through the root map (identity for every
+        # item except memory, and for memory too when no root map is configured).
+        local_by_canon = {item.to_canon(rel): rel for rel in local}
+        for canon in sorted(set(local_by_canon) | set(upstream)):
+            regkey = "{}/{}".format(item.id, canon)
+            has_local = canon in local_by_canon
+            has_sync = canon in upstream
+            local_rel = local_by_canon[canon] if has_local else item.to_local(canon)
+            lm = mtime_of(local[local_rel]) if has_local else None
+            sm = mtime_of(upstream[canon]) if has_sync else None
             # Canonical destination paths, valid whether or not the side has the file yet.
             if item.kind == "file":
                 lp_canon, sp_canon = item.local, item.sync
             else:
-                lp_canon, sp_canon = item.local / rel, item.sync / rel
+                lp_canon, sp_canon = item.local / local_rel, item.sync / canon
             kind = classify(direction, has_local, has_sync,
                             lm or 0.0, sm or 0.0, regkey in baseline)
-            actions.append(Action(item.id, rel, regkey, kind, lp_canon, sp_canon,
+            actions.append(Action(item.id, canon, regkey, kind, lp_canon, sp_canon,
                                   lm, sm, item.secret))
     return actions
 
@@ -704,6 +766,116 @@ def touch_device(sync_root: Path, cfg: dict):
     save_definition(sync_root, definition)
 
 
+# --------------------------------------------------------------------------- #
+# Main working folder + project registry (true-cwd capture, report, scaffold)
+# --------------------------------------------------------------------------- #
+def get_main_work_root(sync_root: Path):
+    """The canonical main-working-folder record a machine established, or None."""
+    return (load_definition(sync_root) or {}).get("mainWorkRoot")
+
+
+def ensure_main_work_root(sync_root: Path, cfg: dict) -> None:
+    """First machine to configure a work root anchors the canonical key for the folder
+    and bumps it to schema v2 so stale engines refuse it rather than mis-mapping."""
+    if not cfg.get("canonicalKey"):
+        return
+    definition = load_definition(sync_root)
+    if not definition or "mainWorkRoot" in definition:
+        return
+    definition["mainWorkRoot"] = {
+        "canonicalKey": cfg["canonicalKey"],
+        "establishedBy": cfg["device"],
+        "examplePath": cfg.get("workRoot", ""),
+    }
+    definition["schemaVersion"] = max(definition.get("schemaVersion", 1), 2)
+    save_definition(sync_root, definition)
+
+
+def read_project_cwd(project_dir: Path):
+    """The true absolute cwd recorded in a project's transcripts (Claude Code writes a
+    'cwd' field on each event), or None. This is exact — never reverse the lossy key."""
+    try:
+        jsonls = sorted(project_dir.glob("*.jsonl"))
+    except OSError:
+        return None
+    for jf in jsonls:
+        try:
+            with jf.open("r", encoding="utf-8-sig") as fh:  # tolerate a leading BOM
+                for line in fh:
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(obj, dict) and obj.get("cwd"):
+                        return obj["cwd"]
+        except OSError:
+            continue
+    return None
+
+
+def _under_root(key: str, root_prefix: str) -> bool:
+    return key == root_prefix or key.startswith(root_prefix + "-")
+
+
+def update_project_registry(cfg: dict) -> None:
+    """On `up`: record each local project under the work root into the folder's project
+    registry, keyed by canonical project key, storing the cwd's subpath relative to the
+    work root so any machine can rebuild the exact local path on `down`."""
+    work_root = cfg.get("workRoot")
+    work_key = cfg.get("workKey")
+    canonical = cfg.get("canonicalKey")
+    if not (work_root and work_key and canonical):
+        return
+    sync_root = Path(cfg["syncRoot"])
+    definition = load_definition(sync_root)
+    if not definition:
+        return
+    projects_dir = Path(cfg["claudeHome"]) / "projects"
+    if not projects_dir.exists():
+        return
+    registry = definition.setdefault("projects", {})
+    for child in sorted(projects_dir.iterdir()):
+        if not child.is_dir() or child.name in ALWAYS_SKIP_NAMES:
+            continue
+        if not _under_root(child.name, work_key):
+            continue  # only projects beneath this machine's work root
+        canon_key = remap_first_segment(child.name, {work_key: canonical})
+        cwd = read_project_cwd(child)
+        subpath = ""
+        if cwd:
+            try:
+                rp = Path(cwd).relative_to(Path(work_root)).as_posix()
+                subpath = "" if rp == "." else rp
+            except ValueError:
+                subpath = ""
+        registry[canon_key] = {
+            "subpath": subpath,
+            "sourceCwd": cwd or "",
+            "updatedBy": cfg["device"],
+            "updatedAt": now_iso(),
+        }
+    save_definition(sync_root, definition)
+
+
+def local_project_paths(cfg: dict) -> "list[tuple[str, str]]":
+    """For `down`: (canonical key, exact local working path) for every registered
+    project under this machine's canonical root, rebuilt from work root + stored
+    subpath. Empty unless a work root is configured."""
+    work_root = cfg.get("workRoot")
+    canonical = cfg.get("canonicalKey")
+    if not (work_root and canonical):
+        return []
+    registry = (load_definition(Path(cfg["syncRoot"])) or {}).get("projects", {})
+    out = []
+    for canon_key, meta in sorted(registry.items()):
+        if not _under_root(canon_key, canonical):
+            continue
+        subpath = meta.get("subpath", "")
+        path = Path(work_root) / subpath if subpath else Path(work_root)
+        out.append((canon_key, str(path)))
+    return out
+
+
 def init_or_join_folder(sync_root: Path, cfg: dict, assume_yes: bool) -> bool:
     """Returns True if it is OK to proceed, False to abort."""
     definition = load_definition(sync_root)
@@ -867,16 +1039,71 @@ def cmd_sync(args, direction):
     if applied["conflicts"]:
         print("Conflicts were NOT changed. Re-run with --prefer local|folder to resolve.")
 
-    if direction == "down" and not args.no_tool_hints:
+    if direction == "up":
+        # Capture each project's true cwd so other machines can rebuild the exact path.
+        update_project_registry(cfg)
+    else:
+        # Tell the user exactly where to work to use each synced project — no typing the
+        # path from memory (avoids fat-fingering the folder name). --scaffold pre-creates.
+        paths = local_project_paths(cfg)
+        if paths:
+            print("\n{}:".format(
+                "Created these working folders for your synced projects"
+                if args.scaffold
+                else "Open these working folders to use your synced projects"))
+            for canon_key, path in paths:
+                if args.scaffold:
+                    try:
+                        Path(path).mkdir(parents=True, exist_ok=True)
+                    except OSError:
+                        pass
+                print("  {:<24}  {}".format(canon_key, path))
+            if not args.scaffold:
+                print("  (re-run with --scaffold to pre-create these empty folders)")
+
         # Scan only the transcripts pulled THIS run (i.e. other-machine activity we didn't
-        # have) so the nudge is scoped and never re-nags once they're in sync.
-        pulled = [a.local_path for a in actions
-                  if a.item == "claude-memory" and a.kind == "copy_down"
-                  and str(a.local_path).endswith(".jsonl")]
-        hints, capped = gather_install_hints(pulled)
-        note = render_install_hints(hints, capped)
-        if note:
-            print(note)
+        # have) for tool-install reminders, so the nudge is scoped and never re-nags.
+        if not args.no_tool_hints:
+            pulled = [a.local_path for a in actions
+                      if a.item == "claude-memory" and a.kind == "copy_down"
+                      and str(a.local_path).endswith(".jsonl")]
+            hints, capped = gather_install_hints(pulled)
+            note = render_install_hints(hints, capped)
+            if note:
+                print(note)
+
+
+def prompt_work_root(args, existing, sync_root, device):
+    """Resolve this machine's main working folder. --work-root wins; a scripted/AI
+    install (--sync-root present) is non-interactive; otherwise prompt, with a clear
+    first-machine vs joining distinction. Returns a path string or None (feature off)."""
+    if args.work_root:
+        return args.work_root
+    if args.sync_root:  # non-interactive scripted/AI install: don't prompt
+        return existing.get("workRoot")
+
+    candidate = existing.get("workRoot") or (
+        str(detect_dev_root()) if detect_dev_root() else "")
+    print("\n--- Main working folder ---")
+    print("Claude ties its memory to the folder you work in. To match a project across")
+    print("machines, name your MAIN working folder: the parent your projects live under")
+    print("(e.g. C:\\dev) - NOT a single project inside it (e.g. C:\\dev\\my-app).")
+    print("Note: this only syncs Claude's memory of your projects, never the code/files")
+    print("inside these folders.")
+
+    existing_mwr = get_main_work_root(sync_root)
+    if existing_mwr and existing_mwr.get("establishedBy") != device:
+        example = existing_mwr.get("examplePath") or existing_mwr.get("canonicalKey")
+        print("\nYour other machine '{}' uses its main working folder at: {}".format(
+            existing_mwr.get("establishedBy", "?"), example))
+        print("Enter THIS machine's matching folder. It can be a different drive or")
+        print("name; projects beneath it are paired up automatically.")
+    else:
+        print("\nIf you're currently inside a specific project, enter its PARENT instead.")
+
+    raw = ask("Main working folder [{}] (blank to skip): ".format(candidate or "none"),
+              candidate)
+    return raw or None
 
 
 def cmd_setup(args):
@@ -914,6 +1141,16 @@ def cmd_setup(args):
     if not args.sync_root and not args.device:
         device = ask("Device id [{}]: ".format(device), device)
 
+    # Main working folder -> per-machine project-key map. A machine adopts the folder's
+    # canonical key if one is already established; otherwise it anchors it.
+    work_root = prompt_work_root(args, existing, sync_root, device)
+    work_key = sanitize_path_to_key(work_root) if work_root else None
+    if work_key:
+        existing_mwr = get_main_work_root(sync_root)
+        canonical_key = existing_mwr["canonicalKey"] if existing_mwr else work_key
+    else:
+        canonical_key = None
+
     cfg = {
         "schemaVersion": SCHEMA_VERSION,
         "device": device,
@@ -921,16 +1158,27 @@ def cmd_setup(args):
         "claudeHome": str(home),
         "devRoot": dev_root,
         "syncRoot": str(sync_root),
+        "workRoot": work_root,
+        "workKey": work_key,
+        "canonicalKey": canonical_key,
         "pushSecrets": bool(existing.get("pushSecrets", False)),
         "skillExclude": existing.get("skillExclude", list(TOOL_SKILL_FOLDERS)),
     }
 
     if not init_or_join_folder(sync_root, cfg, args.yes):
         sys.exit(2)
+    ensure_main_work_root(sync_root, cfg)
 
     save_config(cfg)
     print("\nWrote {}".format(config_path(home)))
     print("Device '{}' ({}) registered on {}".format(device, cfg["os"], sync_root))
+    if work_root:
+        print("Main working folder: {}".format(work_root))
+        if work_key != canonical_key:
+            print("  Projects here map to the shared canonical root '{}' "
+                  "(local '{}').".format(canonical_key, work_key))
+        else:
+            print("  This machine anchors the canonical root '{}'.".format(canonical_key))
     print("\nNext: run a preview with")
     print("  python3 sync_engine.py --direction down")
     print("then apply with --apply once you're happy.")
@@ -962,7 +1210,13 @@ def build_parser():
                    help="down: skip scanning pulled transcripts for tool-install reminders")
     p.add_argument("--claude-home", help="override the Claude home directory")
     p.add_argument("--sync-root", help="setup: sync folder path (non-interactive)")
+    p.add_argument("--work-root",
+                   help="setup: main working folder (parent your projects live under, "
+                        "e.g. C:\\dev); enables cross-machine project matching")
     p.add_argument("--device", help="setup: device id (defaults to hostname)")
+    p.add_argument("--scaffold", action="store_true",
+                   help="down: pre-create the empty local working folder for each "
+                        "synced project")
     p.add_argument("--version", action="store_true", help="print version and exit")
     return p
 
