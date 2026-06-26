@@ -139,4 +139,6 @@ others with the same problem.
 
 ## License
 
+Completely free to use! If you'd like to support me, you can buy me a coffee at https://buymeacoffee.com/jonmcmillan.
+
 [Apache License 2.0](LICENSE).
