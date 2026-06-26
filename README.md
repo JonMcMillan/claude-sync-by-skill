@@ -71,6 +71,17 @@ context. `/sync-env-down --scaffold` pre-creates those empty folders for you. Na
 working folder is optional; skip it and every project syncs under its literal per-machine
 key, exactly as before.
 
+### Tool-install reminders
+
+When you `sync-env-down`, the engine scans the transcripts it just pulled for evidence
+that a **CLI or tool was installed during sessions on another machine** — both commands
+actually run (`npm i -g`, `winget install`, `brew install`, `gh extension install`, …) and
+your own notes about installing something manually in a terminal. If it finds any that
+**aren't already on this machine's PATH**, it prints a short, advisory reminder so you can
+install the same here. It's a best-effort nudge from data already synced — never an
+automated install — and only looks at the transcripts pulled that run, so it won't re-nag.
+Suppress it with `--no-tool-hints`.
+
 ### Safety: overwrites and deletions are intentional and reviewed
 
 Syncing means overwriting and propagating deletions — but never by accident:
