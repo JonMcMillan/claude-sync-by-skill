@@ -81,6 +81,9 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="Install claude-sync-by-skill.")
     p.add_argument("--no-setup", action="store_true", help="skip interactive setup")
     p.add_argument("--skills-dir", help="override the Claude skills directory")
+    p.add_argument("--sync-root", help="sync folder path (non-interactive setup)")
+    p.add_argument("--device", help="device id (defaults to hostname)")
+    p.add_argument("--yes", action="store_true", help="assume yes for prompts")
     args = p.parse_args(argv)
 
     if not have_git():
@@ -102,7 +105,14 @@ def main(argv=None):
         return 0
 
     print("\nLaunching setup...\n")
-    rc = run([sys.executable, str(engine_dir / "sync_engine.py"), "--setup"])
+    setup_cmd = [sys.executable, str(engine_dir / "sync_engine.py"), "--setup"]
+    if args.sync_root:
+        setup_cmd += ["--sync-root", args.sync_root]
+    if args.device:
+        setup_cmd += ["--device", args.device]
+    if args.yes:
+        setup_cmd += ["--yes"]
+    rc = run(setup_cmd)
     return rc.returncode
 
 

@@ -84,6 +84,23 @@ pick the sync folder and join/initialize it), and materializes the `sync-env-up`
 `sync-env-down` skills. Then, in Claude Code, run `/sync-env-down` (or `/sync-env-up` on
 your first/primary machine) to begin.
 
+### Install with Claude (AI-assisted)
+
+You don't have to run anything yourself — just ask your AI agent. In Claude Code, say:
+
+> Install the skill from https://github.com/JonMcMillan/claude-sync-by-skill — follow its AI-INSTALL.md.
+
+Claude reads [`AI-INSTALL.md`](AI-INSTALL.md), checks prerequisites, clones the repo into
+your skills folder, creates the wrapper skills, asks you for your sync folder, and runs
+setup (non-interactively via `--sync-root`). Reload Claude Code afterward so the new slash
+commands appear.
+
+For a scripted one-shot install yourself:
+
+```bash
+python3 install.py --sync-root "/path/to/your/sync/folder"
+```
+
 ---
 
 ## Updates
