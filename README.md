@@ -128,14 +128,6 @@ environment — including all your other skills — syncs through the sync folde
 
 ---
 
-## Design notes
-
-This started after a bidirectional auto-reconciler nearly trashed a day's work: it
-inferred "deleted" from a *shared* registry that recorded whichever machine last touched
-a file, so a brand-new file looked like a deletion to the other machine. The redesign
-keeps the cure simple — **directional commands + a per-machine baseline + a review step**
-— rather than trying to out-clever a two-way merge.
-
 ## Offered to Anthropic / prior art
 
 Native cross-machine sync for Claude Code is a long-standing, popular request
