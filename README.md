@@ -82,6 +82,16 @@ install the same here. It's a best-effort nudge from data already synced — nev
 automated install — and only looks at the transcripts pulled that run, so it won't re-nag.
 Suppress it with `--no-tool-hints`.
 
+### Git-pull reminders
+
+`sync-env-down` syncs *Claude's* environment, not your code — so after a down, the engine
+also checks whether your **project repos** are behind their git remote (someone committed
+or pushed from another machine). For each registered project folder that's a git repo it
+does a best-effort `git fetch`, and if your current branch is behind its upstream it prints
+a one-line nudge with the exact `git -C … pull --ff-only` command. It **never pulls for
+you**, warns when a repo has uncommitted changes, and skips repos with no upstream or no
+network. Suppress it with `--no-git-hints`.
+
 ### Safety: overwrites and deletions are intentional and reviewed
 
 Syncing means overwriting and propagating deletions — but never by accident:
