@@ -224,5 +224,62 @@ class TestSecrets(Base):
         self.assertTrue((self.sync / "infra-env" / ".env").exists())
 
 
+class TestThreeWayConflict(Base):
+    """Baseline-aware (three-way) conflict detection: a CONFLICT only when BOTH sides
+    changed since the last reconcile. One-sided changes are 'ahead', not conflicts."""
+
+    def setUp(self):
+        super().setUp()
+        eng.init_or_join_folder(self.sync, self.cfg(), assume_yes=True)
+        self.base = 1_000_000.0
+
+    def _both(self, rel, lcontent, fcontent, lmtime, fmtime):
+        write(self.home / "plans" / rel, lcontent, mtime=lmtime)
+        write(self.sync / "claude-plans" / rel, fcontent, mtime=fmtime)
+        return "claude-plans/" + rel
+
+    def test_live_transcript_local_ahead_is_not_conflict(self):
+        # only local moved (e.g. the active session transcript grew); folder == baseline
+        rk = self._both("t.md", "grown", "v1", self.base + 100, self.base)
+        baseline = {rk: self.base}
+        self.assertEqual(self.kinds(eng.compute_plan("down", self.cfg(), baseline))[rk],
+                         "ahead_local")  # NOT conflict
+        self.assertEqual(self.kinds(eng.compute_plan("up", self.cfg(), baseline))[rk],
+                         "copy_up")
+
+    def test_folder_ahead_is_not_conflict(self):
+        rk = self._both("t.md", "v1", "newer", self.base, self.base + 100)
+        baseline = {rk: self.base}
+        self.assertEqual(self.kinds(eng.compute_plan("up", self.cfg(), baseline))[rk],
+                         "ahead_folder")  # NOT conflict
+        self.assertEqual(self.kinds(eng.compute_plan("down", self.cfg(), baseline))[rk],
+                         "copy_down")
+
+    def test_true_conflict_when_both_changed(self):
+        rk = self._both("t.md", "local-edit", "folder-edit", self.base + 100, self.base + 50)
+        baseline = {rk: self.base}
+        for d in ("up", "down"):
+            self.assertEqual(self.kinds(eng.compute_plan(d, self.cfg(), baseline))[rk],
+                             "conflict")
+
+    def test_legacy_baseline_falls_back_to_two_way(self):
+        # legacy baseline stored a timestamp string, not a file mtime -> bm unknown
+        rk = self._both("t.md", "v1", "newer", self.base, self.base + 100)
+        baseline = {rk: eng.now_iso()}
+        self.assertEqual(self.kinds(eng.compute_plan("down", self.cfg(), baseline))[rk],
+                         "copy_down")  # folder newer -> pull
+        self.assertEqual(self.kinds(eng.compute_plan("up", self.cfg(), baseline))[rk],
+                         "conflict")  # folder newer than local on an up
+
+    def test_apply_records_float_mtime_and_heals(self):
+        # after a reconcile the baseline holds a numeric mtime, enabling three-way next time
+        write(self.home / "plans" / "a.md", "x")
+        baseline = {}
+        eng.apply_plan("up", self.cfg(), eng.compute_plan("up", self.cfg(), baseline),
+                       baseline, eng.load_state(self.sync),
+                       confirm_deletions=True, prefer=None, push_secrets=False)
+        self.assertIsInstance(baseline["claude-plans/a.md"], float)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
