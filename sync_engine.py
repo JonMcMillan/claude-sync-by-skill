@@ -1021,6 +1021,73 @@ def version_check(skill_dir: Path):
 
 
 # --------------------------------------------------------------------------- #
+# Git-pull reminders (advisory) — on `down`, check registered project repos
+# --------------------------------------------------------------------------- #
+# After pulling the Claude environment, surface a nudge when a project's CODE repo is
+# behind its remote (someone committed/pushed on another machine). This is read-only:
+# best-effort `git fetch` + behind-count. It NEVER runs `pull` — the user decides.
+GIT_HINT_CAP = 50  # cap fetches per run, in case of a large project set
+
+
+def gather_git_pull_hints(project_paths):
+    """For each registered project path that is a git repo, fetch (best-effort) and check
+    whether the current branch is behind its upstream. Returns (hints, capped); each hint
+    is {path, branch, behind, dirty}. Skips detached HEAD, no-upstream, and offline repos
+    quietly. Never runs `pull`."""
+    hints = []
+    capped = False
+    checked = 0
+    for _key, path in project_paths:
+        p = Path(path)
+        if not (p / ".git").exists():
+            continue
+        if checked >= GIT_HINT_CAP:
+            capped = True
+            break
+        checked += 1
+        try:
+            br = git(["rev-parse", "--abbrev-ref", "HEAD"], p)
+            if br.returncode != 0:
+                continue
+            branch = br.stdout.strip()
+            if branch == "HEAD":
+                continue  # detached HEAD — nothing to track
+            if git(["rev-parse", "--abbrev-ref", "@{u}"], p).returncode != 0:
+                continue  # no upstream tracking branch
+            if git(["fetch", "--quiet"], p).returncode != 0:
+                continue  # offline / auth failure — skip quietly
+            counts = git(["rev-list", "--left-right", "--count", "HEAD...@{u}"], p)
+            if counts.returncode != 0:
+                continue
+            parts = counts.stdout.split()
+            behind = int(parts[1]) if len(parts) == 2 else 0
+            if behind <= 0:
+                continue
+            dirty = bool(git(["status", "--porcelain"], p).stdout.strip())
+            hints.append({"path": str(p), "branch": branch,
+                          "behind": behind, "dirty": dirty})
+        except (OSError, ValueError):
+            continue
+    return hints, capped
+
+
+def render_git_pull_hints(hints, capped):
+    if not hints:
+        return ""
+    lines = ["", "Some project repos are behind their remote (likely pushed from another "
+             "machine). Pulling is your call - this tool never pulls for you:"]
+    for h in hints:
+        warn = "  [has uncommitted changes - commit/stash first]" if h["dirty"] else ""
+        lines.append("  - {} ({}): {} commit(s) behind origin{}".format(
+            h["path"], h["branch"], h["behind"], warn))
+        lines.append("      git -C \"{}\" pull --ff-only".format(h["path"]))
+    if capped:
+        lines.append("  (checked the first {} repos only)".format(GIT_HINT_CAP))
+    lines.append("  Suppress these with --no-git-hints.")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
 # Commands
 # --------------------------------------------------------------------------- #
 def require_config(args):
@@ -1115,6 +1182,14 @@ def cmd_sync(args, direction):
             note = render_install_hints(hints, capped)
             if note:
                 print(note)
+
+        # Advisory: if a project's code repo is behind its remote (committed/pushed from
+        # another machine), nudge the user to pull. Read-only; never pulls automatically.
+        if not args.no_git_hints:
+            ghints, gcapped = gather_git_pull_hints(local_project_paths(cfg))
+            gnote = render_git_pull_hints(ghints, gcapped)
+            if gnote:
+                print(gnote)
 
 
 def prompt_work_root(args, existing, sync_root, device):
@@ -1252,6 +1327,8 @@ def build_parser():
                    help="allow pushing secret files (.env) to the folder")
     p.add_argument("--no-tool-hints", action="store_true",
                    help="down: skip scanning pulled transcripts for tool-install reminders")
+    p.add_argument("--no-git-hints", action="store_true",
+                   help="down: skip checking whether project repos are behind their remote")
     p.add_argument("--claude-home", help="override the Claude home directory")
     p.add_argument("--sync-root", help="setup: sync folder path (non-interactive)")
     p.add_argument("--work-root",
