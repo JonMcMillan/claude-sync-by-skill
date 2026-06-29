@@ -92,8 +92,11 @@ Syncing means overwriting and propagating deletions — but never by accident:
   that's in the folder but **not in your baseline** is something another machine added
   that you simply haven't pulled yet — it is **never** mistaken for a deletion.
 - **Everything is previewed first.** Every run prints a summary; any deletion is flagged
-  as destructive and requires confirmation. Conflicts (both sides changed) are never
-  auto-resolved — you decide.
+  as destructive and requires confirmation. **Conflict detection is three-way:** a
+  `CONFLICT` is raised only when *both* sides changed since you last reconciled, and is
+  never auto-resolved — you decide. A file changed on only *one* side (e.g. the session
+  transcript you're actively writing, which is always newer locally) is shown as *"newer
+  local"* / *"newer in folder"* and kept — it is **not** flagged as a conflict.
 - **Deletions go to trash**, under `<syncFolder>/.trash/<timestamp>/`, and are
   recoverable.
 
