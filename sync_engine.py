@@ -409,16 +409,40 @@ class Action:
 # action kinds that actually mutate something
 MUTATING = {"copy_up", "copy_down", "del_upstream", "del_local"}
 DESTRUCTIVE = {"del_upstream", "del_local"}
+# no-op kinds that are not worth flagging in the action table (one side is simply ahead)
+QUIET = {"in_sync", "ahead_local", "ahead_folder"}
 
 
-def classify(direction, has_local, has_sync, lm, sm, in_baseline):
+def classify(direction, has_local, has_sync, lm, sm, in_baseline, bm):
+    """Decide the action for one file.
+
+    bm = the file's mtime when it was last reconciled (from the baseline), or None when
+    that is unknown (never reconciled, or a legacy baseline that only recorded a sync
+    timestamp). in_baseline = whether the file was present in the baseline at all (used
+    for deletion detection).
+
+    Conflict is THREE-WAY: a CONFLICT only when BOTH sides changed since the baseline.
+    If only one side moved, that side is simply "ahead" -- e.g. the live session
+    transcript is newer locally every sync, which is expected, not a conflict.
+    """
     tol = MTIME_TOLERANCE
     if has_local and has_sync:
         if abs(lm - sm) <= tol:
             return "in_sync"
+        # present on both sides but differing content
+        if bm is None:
+            # unknown reconciled state (new-on-both, or legacy baseline) -> two-way
+            # fallback by direction (self-heals once a real mtime is recorded)
+            if direction == "up":
+                return "copy_up" if lm > sm else "conflict"
+            return "copy_down" if sm > lm else "conflict"
+        local_changed = abs(lm - bm) > tol
+        folder_changed = abs(sm - bm) > tol
+        if local_changed and folder_changed:
+            return "conflict"                       # genuine divergence
         if direction == "up":
-            return "copy_up" if lm > sm else "conflict"
-        return "copy_down" if sm > lm else "conflict"
+            return "copy_up" if local_changed else "ahead_folder"
+        return "copy_down" if folder_changed else "ahead_local"
     if has_local and not has_sync:
         if direction == "up":
             return "copy_up"  # new locally, or resurrect (my machine is authoritative)
@@ -451,8 +475,10 @@ def compute_plan(direction, cfg, baseline) -> "list[Action]":
                 lp_canon, sp_canon = item.local, item.sync
             else:
                 lp_canon, sp_canon = item.local / local_rel, item.sync / canon
+            bval = baseline.get(regkey)
+            bm = float(bval) if isinstance(bval, (int, float)) else None
             kind = classify(direction, has_local, has_sync,
-                            lm or 0.0, sm or 0.0, regkey in baseline)
+                            lm or 0.0, sm or 0.0, regkey in baseline, bm)
             actions.append(Action(item.id, canon, regkey, kind, lp_canon, sp_canon,
                                   lm, sm, item.secret))
     return actions
@@ -468,6 +494,8 @@ LABELS = {
     "del_local": "trash+DELETE local",
     "conflict": "CONFLICT",
     "in_sync": "in sync",
+    "ahead_local": "newer local (kept; pushes on up)",
+    "ahead_folder": "newer in folder (kept; pull with down)",
     "keep_local_new": "keep (new local, unpushed)",
     "leave_upstream": "leave (added elsewhere)",
     "absent": "absent",
@@ -477,7 +505,7 @@ LABELS = {
 def summarize(actions):
     counts = {}
     for a in actions:
-        if a.kind == "in_sync":
+        if a.kind in QUIET:
             continue
         counts[a.kind] = counts.get(a.kind, 0) + 1
     return counts
@@ -485,7 +513,20 @@ def summarize(actions):
 
 def render_plan(direction, cfg, actions, first_sync):
     lines = []
-    interesting = [a for a in actions if a.kind != "in_sync"]
+    interesting = [a for a in actions if a.kind not in QUIET]
+    ahead_l = sum(1 for a in actions if a.kind == "ahead_local")
+    ahead_f = sum(1 for a in actions if a.kind == "ahead_folder")
+
+    def ahead_notes():
+        ns = []
+        if ahead_l:
+            ns.append("note: {} file(s) newer locally (kept, not a conflict; will push "
+                      "on the next up-sync).".format(ahead_l))
+        if ahead_f:
+            ns.append("note: {} file(s) newer in the folder (kept; pull them with a "
+                      "down-sync).".format(ahead_f))
+        return ns
+
     header = "sync-env-{}  (device: {}  syncRoot: {})".format(
         direction, cfg["device"], cfg["syncRoot"])
     lines.append(header)
@@ -493,7 +534,7 @@ def render_plan(direction, cfg, actions, first_sync):
         lines.append("FIRST SYNC for this machine - analyzing the full environment; "
                      "no deletions will occur on a first sync.")
     if not interesting:
-        lines.append("Everything is in sync. Nothing to do.")
+        lines.extend(ahead_notes() or ["Everything is in sync. Nothing to do."])
         return "\n".join(lines)
 
     width = max((len(a.regkey) for a in interesting), default=10)
@@ -514,6 +555,7 @@ def render_plan(direction, cfg, actions, first_sync):
     if dels:
         lines.append("WARNING: {} destructive deletion(s) - recoverable under "
                      "<syncRoot>/.trash/.".format(len(dels)))
+    lines.extend(ahead_notes())
     return "\n".join(lines)
 
 
@@ -565,13 +607,13 @@ def apply_plan(direction, cfg, actions, baseline, state, confirm_deletions,
                 applied["skipped"] += 1
                 continue
             copy_preserve(a.local_path, a.sync_path, a.secret)
-            baseline[a.regkey] = now_iso()
+            baseline[a.regkey] = mtime_of(a.sync_path)  # reconciled mtime (both sides now match)
             files[a.regkey] = {"host": device, "mtime": now_iso()}
             applied["copied"] += 1
 
         elif kind == "copy_down":
             copy_preserve(a.sync_path, a.local_path, a.secret)
-            baseline[a.regkey] = now_iso()
+            baseline[a.regkey] = mtime_of(a.local_path)  # reconciled mtime
             files.setdefault(a.regkey, {"host": "unknown", "mtime": now_iso()})
             applied["copied"] += 1
 
@@ -587,9 +629,11 @@ def apply_plan(direction, cfg, actions, baseline, state, confirm_deletions,
             applied["deleted"] += 1
 
         elif kind == "in_sync":
-            baseline.setdefault(a.regkey, now_iso())
+            # record the reconciled mtime (upgrades legacy timestamp entries too) so
+            # future syncs can do three-way change detection
+            baseline[a.regkey] = mtime_of(a.local_path)
 
-        # keep_local_new / leave_upstream / absent -> no-op
+        # ahead_local / ahead_folder / keep_local_new / leave_upstream / absent -> no-op
 
     save_baseline(Path(cfg["claudeHome"]), baseline)
     save_state(sync_root, state, device)
