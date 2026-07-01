@@ -891,7 +891,16 @@ def update_project_registry(cfg: dict) -> None:
                 rp = Path(cwd).relative_to(Path(work_root)).as_posix()
                 subpath = "" if rp == "." else rp
             except ValueError:
-                subpath = ""
+                subpath = ""  # cwd is another machine's path (pulled transcript); can't
+                #              localize it here -- fall through to preserve any good value
+        # Non-destructive: never overwrite a good subpath/cwd (recorded by the machine that
+        # actually works this project) with an empty one derived from a missing or foreign
+        # cwd. This both re-fills a stale empty entry and protects another machine's value.
+        existing = registry.get(canon_key, {})
+        if not subpath and existing.get("subpath"):
+            subpath = existing["subpath"]
+        if not cwd and existing.get("sourceCwd"):
+            cwd = existing["sourceCwd"]
         registry[canon_key] = {
             "subpath": subpath,
             "sourceCwd": cwd or "",
