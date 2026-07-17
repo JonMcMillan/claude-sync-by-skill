@@ -109,6 +109,14 @@ never produce a merge conflict, and "resolve" adds a recoverable tombstone rathe
 deleting anything. Notes are plaintext — don't put secrets in them. Suppress surfacing on a
 given down with `--no-notes`.
 
+**Task connector.** "Make a task" needs to know *which* task app to use. Setup offers to
+record one (today: Todoist), and if you skip it there, the first time you convert a note
+the skill asks once and saves your choice. The preference — app plus project/section name —
+lives in the shared folder so it propagates to every machine, but the app itself must be
+connected in Claude on a given machine to actually create tasks there; if it isn't, that
+machine just keeps the note. The engine only records the choice — it never talks to the
+task app; the skill does, over MCP.
+
 ### Safety: overwrites and deletions are intentional and reviewed
 
 Syncing means overwriting and propagating deletions — but never by accident:
