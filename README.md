@@ -43,8 +43,10 @@ each machine holds a working copy. Three commands:
 | Command | Direction | What it does |
 |---|---|---|
 | `/sync-env-up` | local → folder | Push your current machine's environment to the sync folder (overwrite/update the unified copy), with version + deletion checks. |
-| `/sync-env-down` | folder → local | Bring the unified environment onto this machine (overwrite/update local). |
+| `/sync-env-down` | folder → local | Bring the unified environment onto this machine (overwrite/update local). Also surfaces cross-device notes left elsewhere. |
 | `/sync-envs` | — | Read-only preview of what up *would* push and down *would* pull, plus the device roster. Changes nothing. |
+| `/sync-add-note` | — | Leave a reminder that surfaces on your *other* machines on their next down (never on the one that made it). |
+| `/sync-notes` | — | Read-only list of all active cross-device notes. |
 
 What's unified: **memory** (incl. session transcripts — resume a conversation on any
 machine), **plans**, **settings**, your **skills**, and (opt-in) **secrets**. The sync
@@ -91,6 +93,21 @@ does a best-effort `git fetch`, and if your current branch is behind its upstrea
 a one-line nudge with the exact `git -C … pull --ff-only` command. It **never pulls for
 you**, warns when a repo has uncommitted changes, and skips repos with no upstream or no
 network. Suppress it with `--no-git-hints`.
+
+### Cross-device notes
+
+Leave yourself a reminder on one machine and pick it up on another. `/sync-add-note "fix
+the timeout flake before shipping"` on your desktop, and the next time your laptop runs
+`/sync-env-down` the note surfaces there — **not** on the desktop that wrote it. For each
+surfaced note you choose: **make a task** (created in your Todoist), **keep** it (stops
+nagging on *this* machine, stays live for the others), or **resolve** it (clears it
+everywhere, after you confirm). `/sync-notes` lists everything currently active.
+
+The store is built for a dumb cloud mirror: every note, acknowledgement, and resolution is
+a separate write-once file under `<syncFolder>/notes/`, so two machines editing offline can
+never produce a merge conflict, and "resolve" adds a recoverable tombstone rather than
+deleting anything. Notes are plaintext — don't put secrets in them. Suppress surfacing on a
+given down with `--no-notes`.
 
 ### Safety: overwrites and deletions are intentional and reviewed
 
@@ -154,9 +171,9 @@ python3 install.py --sync-root "/path/to/your/sync/folder"
 
 ## Updates
 
-Only the **sync tool's own skill folders** (`sync-envs`, `sync-env-up`, `sync-env-down`)
-are managed by git — so every machine runs the same engine version, and the tool's `.git`
-never ends up inside your cloud-mirrored folder. Each run checks GitHub and, if a newer
+Only the **sync tool's own skill folders** (`sync-envs`, `sync-env-up`, `sync-env-down`,
+`sync-add-note`, `sync-notes`) are managed by git — so every machine runs the same engine
+version, and the tool's `.git` never ends up inside your cloud-mirrored folder. Each run checks GitHub and, if a newer
 version exists, offers to `git pull` before continuing. Everything *else* about your
 environment — including all your other skills — syncs through the sync folder.
 
