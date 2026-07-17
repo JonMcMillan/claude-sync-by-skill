@@ -117,6 +117,11 @@ connected in Claude on a given machine to actually create tasks there; if it isn
 machine just keeps the note. The engine only records the choice — it never talks to the
 task app; the skill does, over MCP.
 
+When a connector is set and connected, `sync-env-down` also shows your still-open tasks in
+that project/section as a read-only reminder when you pull — a "what's waiting for you" list
+alongside any new notes. It's scoped to the configured section, not your whole task app, and
+it's skipped silently when the app isn't connected on that machine.
+
 ### Safety: overwrites and deletions are intentional and reviewed
 
 Syncing means overwriting and propagating deletions — but never by accident:
