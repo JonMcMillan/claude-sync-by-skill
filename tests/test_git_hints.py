@@ -126,10 +126,16 @@ class TestGitTimeout(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout.strip(), "true")
 
-    def test_prompts_are_disabled(self):
-        r = eng.git(["var", "GIT_EDITOR"], self.tmp)  # cheap env round-trip
+    def test_env_is_not_leaked_to_parent(self):
+        # git() sets GIT_TERMINAL_PROMPT=0 (and friends) for the child only.
+        # Use --version: rc is 0 on every platform and needs no repo, editor,
+        # or config - unlike `git var GIT_EDITOR`, whose rc depends on whether
+        # the host has an editor configured (it does not on CI runners).
+        before = os.environ.get("GIT_TERMINAL_PROMPT")
+        r = eng.git(["--version"], self.tmp)
         self.assertEqual(r.returncode, 0)
-        self.assertEqual(os.environ.get("GIT_TERMINAL_PROMPT"), None,
+        self.assertIn("git version", r.stdout)
+        self.assertEqual(os.environ.get("GIT_TERMINAL_PROMPT"), before,
                          "git() must not leak env changes into the parent")
 
 
