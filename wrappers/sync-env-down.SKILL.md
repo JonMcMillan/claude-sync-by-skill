@@ -84,6 +84,33 @@ eventually die with `FileNotFoundError [WinError 3]` on a path under the sync fo
      i.e. code was pushed from another machine) — relay it and offer to run the shown
      `git pull --ff-only`, but only after the user agrees; never pull automatically, and
      heed the uncommitted-changes warning. `--no-git-hints` suppresses the check.
+   - **Cross-device notes** (see below). `--no-notes` suppresses them.
+
+## Cross-device notes
+
+After applying, the engine may print a **"Notes left on your other machines"** block —
+reminders the user left elsewhere with `/sync-add-note`. Each line is `[<id>] text
+(origin, age)`. They surface here because this machine didn't originate them and hasn't
+handled them yet; they never surface on the machine that wrote them.
+
+Relay each note, then for **each one** ask the user which they want (don't assume):
+
+- **Make a task** — the note is something to do. Create a task in the user's Todoist:
+  project **"Claude"**, section **"sync-env-tasks"** (resolve both by name via the Todoist
+  MCP: `find-projects "Claude"` → `find-sections` for that project → `add-tasks` with
+  `sectionId`; the known ids are project `6h6J2J34v2267FW5` / section `6h6J2PHfjM8Wpx4X`,
+  but prefer name lookup in case they change). Use the note text as the task content. Then
+  resolve the note with the task linked:
+  `... sync_engine.py --resolve-note "<id>" --note-task "<taskId>"`.
+- **Keep it** — still relevant, act on it later. Run `... --ack-notes "<id>"` so it won't
+  nag again **on this machine** (it stays active for the user's other machines and in
+  `/sync-notes`).
+- **Resolve it** — done or no longer needed. **Confirm first** (this clears it on *every*
+  machine), then `... --resolve-note "<id>"`. It's recoverable — a tombstone is written,
+  nothing is hard-deleted.
+
+You can batch `--ack-notes "id1,id2,..."` for several "keep" decisions in one call. Run
+these engine calls in the background like the others.
 
 ## First sync
 
