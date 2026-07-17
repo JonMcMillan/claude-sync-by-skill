@@ -49,6 +49,21 @@ class TestNotes(unittest.TestCase):
         order = [n["id"] for n in eng.load_active_notes(self.sync)]
         self.assertEqual(order, [n1["id"], n2["id"]])
 
+    def test_creation_order_holds_when_the_clock_has_no_resolution(self):
+        # On Windows/older Python, time.time() resolution is ~15ms, so rapid
+        # notes share a timestamp. seq must still order them by creation.
+        real = eng.time.time
+        eng.time.time = lambda: 1000.0  # frozen clock: zero resolution
+        eng._last_seq = 0.0
+        try:
+            eng.add_note(self.sync, A, "first")
+            eng.add_note(self.sync, A, "second")
+            eng.add_note(self.sync, A, "third")
+        finally:
+            eng.time.time = real
+        self.assertEqual([n["text"] for n in eng.load_active_notes(self.sync)],
+                         ["first", "second", "third"])
+
     # -- surfacing / origin suppression ----------------------------------- #
     def test_origin_device_is_not_reminded(self):
         eng.add_note(self.sync, A, "left on A")

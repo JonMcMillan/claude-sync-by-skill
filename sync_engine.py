@@ -1076,6 +1076,19 @@ def write_folder_readme(sync_root: Path):
 # stays active for other devices and always shows in --list-notes.
 NOTES_CAP = 200  # defensive display/scan cap
 
+_last_seq = 0.0  # module-level: keeps seq strictly increasing within a process
+
+
+def _next_seq() -> float:
+    """A sort key that is best-effort wall-clock (for cross-machine ordering) but
+    strictly increasing within this process. time.time() alone is not enough:
+    on Windows/older Python its resolution is ~15ms, so two rapid notes get the
+    same value and their order collapses to the random uuid in the id."""
+    global _last_seq
+    now = time.time()
+    _last_seq = now if now > _last_seq else _last_seq + 1e-6
+    return _last_seq
+
 
 def notes_root(sync_root: Path) -> Path:
     return Path(sync_root) / "notes"
@@ -1103,7 +1116,7 @@ def add_note(sync_root: Path, device: str, text: str) -> dict:
     # `created` is second-resolution for display; `seq` is a sub-second wall-clock
     # key so notes made within the same second still order by creation.
     note = {"id": new_note_id(device), "origin": device,
-            "created": now_iso(), "seq": time.time(), "text": text}
+            "created": now_iso(), "seq": _next_seq(), "text": text}
     atomic_write_json(notes_root(sync_root) / (note["id"] + ".json"), note)
     return note
 
