@@ -1214,6 +1214,54 @@ def render_notes_list(notes, device: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Task connector (a recorded preference, NOT a live integration)
+# --------------------------------------------------------------------------- #
+# The engine cannot reach an MCP task app (Todoist et al.) - that lives on the
+# Claude side and only the skill can call it. All the engine does is remember
+# WHICH app the user wants notes turned into tasks in, and where (project +
+# section), so every skill reads one canonical place. It lives in the shared
+# definition so the choice propagates to every machine; whether that app is
+# actually connected is a per-session check the skill makes at runtime.
+def load_task_connector(sync_root: Path):
+    """The configured connector {app, project?, section?} or None."""
+    definition = load_definition(sync_root) or {}
+    conn = definition.get("taskConnector")
+    return conn if isinstance(conn, dict) and conn.get("app") else None
+
+
+def set_task_connector(sync_root: Path, app, project=None, section=None):
+    """Record (or clear) the task connector in the shared definition. app of
+    "" / "none" clears it. Returns the stored dict, or None when cleared."""
+    definition = load_definition(sync_root)
+    if not isinstance(definition, dict):
+        raise ValueError("sync folder is not initialized")
+    app = (app or "").strip().lower()
+    if app in ("", "none"):
+        definition.pop("taskConnector", None)
+        save_definition(sync_root, definition)
+        return None
+    if not re.match(r"^[a-z0-9][a-z0-9_-]*$", app):
+        raise ValueError("invalid app name: {!r}".format(app))
+    conn = {"app": app}
+    if project and project.strip():
+        conn["project"] = project.strip()
+    if section and section.strip():
+        conn["section"] = section.strip()
+    definition["taskConnector"] = conn
+    save_definition(sync_root, definition)
+    return conn
+
+
+def render_task_connector(conn) -> str:
+    if not conn:
+        return "none"
+    where = conn.get("project", "?")
+    if conn.get("section"):
+        where += " / " + conn["section"]
+    return "{} ({})".format(conn["app"], where)
+
+
+# --------------------------------------------------------------------------- #
 # GitHub version check
 # --------------------------------------------------------------------------- #
 GIT_TIMEOUT = 20  # seconds; network ops (fetch) are the slow case
@@ -1525,6 +1573,61 @@ def cmd_ack_notes(args):
     return 0
 
 
+def cmd_show_task_connector(args):
+    cfg = require_config(args)
+    conn = load_task_connector(Path(cfg["syncRoot"]))
+    # Machine-readable for the skill: the connector JSON, or the literal `none`.
+    print(json.dumps(conn, sort_keys=True) if conn else "none")
+    return 0
+
+
+def cmd_set_task_connector(args):
+    cfg = require_config(args)
+    try:
+        conn = set_task_connector(Path(cfg["syncRoot"]), args.set_task_connector,
+                                  project=args.task_project, section=args.task_section)
+    except ValueError as exc:
+        print("ERROR: {}".format(exc))
+        return 2
+    print("Task connector cleared." if conn is None
+          else "Task connector set: {}.".format(render_task_connector(conn)))
+    return 0
+
+
+def prompt_task_connector(args, sync_root):
+    """Interactive only: offer to record a task connector for note->task. The
+    engine only stores the choice; the skills do the actual MCP work. Scripted
+    installs (--sync-root) leave whatever is already recorded untouched."""
+    if args.sync_root:
+        return
+    existing = load_task_connector(sync_root)
+    print("\n--- Task connector (optional) ---")
+    print("When a note surfaces on another machine, sync-env-down can offer to turn")
+    print("it into a task in your task app. Today only Todoist is wired up. This just")
+    print("records the choice; the app must be connected in Claude to actually use it.")
+    if existing:
+        print("Currently: {}.".format(render_task_connector(existing)))
+    default_app = (existing or {}).get("app", "todoist")
+    raw = ask("Task app [{}] (or 'none' to skip): ".format(default_app), default_app)
+    app = (raw or "").strip().lower()
+    if app in ("", "none"):
+        if existing:  # explicit opt-out clears a prior choice
+            set_task_connector(sync_root, "none")
+            print("Task connector cleared.")
+        return
+    project = ask("Project/list name [{}]: ".format(
+        (existing or {}).get("project", "Claude")),
+        (existing or {}).get("project", "Claude"))
+    section = ask("Section name [{}] (blank for none): ".format(
+        (existing or {}).get("section", "sync-env-tasks")),
+        (existing or {}).get("section", "sync-env-tasks"))
+    try:
+        conn = set_task_connector(sync_root, app, project=project, section=section)
+        print("Task connector set: {}.".format(render_task_connector(conn)))
+    except ValueError as exc:
+        print("Skipped: {}".format(exc))
+
+
 def prompt_work_root(args, existing, sync_root, device):
     """Resolve this machine's main working folder. --work-root wins; a scripted/AI
     install (--sync-root present) is non-interactive; otherwise prompt, with a clear
@@ -1620,6 +1723,7 @@ def cmd_setup(args):
     if not init_or_join_folder(sync_root, cfg, args.yes):
         sys.exit(2)
     ensure_main_work_root(sync_root, cfg)
+    prompt_task_connector(args, sync_root)
 
     save_config(cfg)
     print("\nWrote {}".format(config_path(home)))
@@ -1676,6 +1780,15 @@ def build_parser():
                    help="with --resolve-note: record the linked task id")
     p.add_argument("--ack-notes", metavar="ID[,ID...]",
                    help="mark notes handled on this device (won't re-surface here)")
+    p.add_argument("--show-task-connector", action="store_true",
+                   help="print the configured task connector (JSON) or 'none'")
+    p.add_argument("--set-task-connector", metavar="APP",
+                   help="record the task app for note->task (e.g. todoist; "
+                        "'none' clears)")
+    p.add_argument("--task-project", metavar="NAME",
+                   help="with --set-task-connector: project/list name")
+    p.add_argument("--task-section", metavar="NAME",
+                   help="with --set-task-connector: section name")
     p.add_argument("--claude-home", help="override the Claude home directory")
     p.add_argument("--sync-root", help="setup: sync folder path (non-interactive)")
     p.add_argument("--work-root",
@@ -1705,6 +1818,10 @@ def main(argv=None):
         return cmd_resolve_note(args)
     if args.ack_notes is not None:
         return cmd_ack_notes(args)
+    if args.show_task_connector:
+        return cmd_show_task_connector(args)
+    if args.set_task_connector is not None:
+        return cmd_set_task_connector(args)
     if args.direction:
         cmd_sync(args, args.direction)
         return 0

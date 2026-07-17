@@ -93,15 +93,28 @@ reminders the user left elsewhere with `/sync-add-note`. Each line is `[<id>] te
 (origin, age)`. They surface here because this machine didn't originate them and hasn't
 handled them yet; they never surface on the machine that wrote them.
 
+**First, check the task connector once** (it determines whether "make a task" is on the
+table): run `... sync_engine.py --show-task-connector`. It prints either `none` or a JSON
+object like `{"app":"todoist","project":"Claude","section":"sync-env-tasks"}`. This is a
+recorded *preference* — it does **not** guarantee the app is connected this session, so
+still confirm the MCP is actually available before relying on it (for Todoist, that the
+Todoist tools are present).
+
 Relay each note, then for **each one** ask the user which they want (don't assume):
 
-- **Make a task** — the note is something to do. Create a task in the user's Todoist:
-  project **"Claude"**, section **"sync-env-tasks"** (resolve both by name via the Todoist
-  MCP: `find-projects "Claude"` → `find-sections` for that project → `add-tasks` with
-  `sectionId`; the known ids are project `6h6J2J34v2267FW5` / section `6h6J2PHfjM8Wpx4X`,
-  but prefer name lookup in case they change). Use the note text as the task content. Then
-  resolve the note with the task linked:
-  `... sync_engine.py --resolve-note "<id>" --note-task "<taskId>"`.
+- **Make a task** — the note is something to do.
+  - *Connector configured and its MCP available:* create the task in that app, at the
+    configured project/section, resolving them **by name** at runtime (for Todoist:
+    `find-projects` for the project name → `find-sections` in it → `add-tasks` with the
+    resolved `sectionId`). Use the note text as the task content. Then link and resolve:
+    `... sync_engine.py --resolve-note "<id>" --note-task "<taskId>"`.
+  - *No connector configured (first use):* offer to set one up now. If the user picks an
+    app whose MCP is available (today: Todoist), resolve/confirm the project + section with
+    them, record it once with
+    `... --set-task-connector todoist --task-project "Claude" --task-section "sync-env-tasks"`,
+    then create the task as above. If they decline, just offer keep/resolve.
+  - *Connector configured but its MCP is NOT available here:* say so plainly and fall back
+    to keep/resolve — **never silently drop the note.**
 - **Keep it** — still relevant, act on it later. Run `... --ack-notes "<id>"` so it won't
   nag again **on this machine** (it stays active for the user's other machines and in
   `/sync-notes`).
