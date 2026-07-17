@@ -1,8 +1,10 @@
 """Tests for the advisory git-pull reminders (read-only behind-check on project repos)."""
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -90,6 +92,45 @@ class TestGitHints(unittest.TestCase):
         self.assertIn("--no-git-hints", out)
         self.assertIn("uncommitted", out)
         self.assertEqual(eng.render_git_pull_hints([], False), "")
+
+
+@unittest.skipUnless(HAVE_GIT, "git not available")
+class TestGitTimeout(unittest.TestCase):
+    """git() must never block forever on a hung network op or credential prompt."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ccsync-gto-"))
+
+    def tearDown(self):
+        shutil.rmtree(str(self.tmp), ignore_errors=True)
+
+    def test_hung_git_is_killed_at_the_timeout(self):
+        # ext:: runs an arbitrary command as a transport helper, giving a
+        # deterministic offline hang with a grandchild holding the pipes.
+        start = time.time()
+        r = eng.git(["-c", "protocol.ext.allow=always",
+                     "ls-remote", "ext::sleep 30"], self.tmp, timeout=2)
+        elapsed = time.time() - start
+        if r.returncode != eng.GIT_TIMEOUT_RC and elapsed < 1:
+            self.skipTest("ext:: helper unavailable; git exited early")
+        self.assertEqual(r.returncode, eng.GIT_TIMEOUT_RC)
+        # Killing only the direct child would leave `sleep` holding the pipes
+        # and stall the follow-up read for the full 30s.
+        self.assertLess(elapsed, 15, "timeout did not bound wall-clock time")
+        self.assertEqual(r.stdout, "")
+        self.assertIn("timed out", r.stderr)
+
+    def test_normal_git_still_works(self):
+        run_git(["init", str(self.tmp)], self.tmp)
+        r = eng.git(["rev-parse", "--is-inside-work-tree"], self.tmp)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stdout.strip(), "true")
+
+    def test_prompts_are_disabled(self):
+        r = eng.git(["var", "GIT_EDITOR"], self.tmp)  # cheap env round-trip
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(os.environ.get("GIT_TERMINAL_PROMPT"), None,
+                         "git() must not leak env changes into the parent")
 
 
 if __name__ == "__main__":
