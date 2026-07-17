@@ -18,6 +18,30 @@ The engine lives next to this file. Invoke it with the platform's Python 3:
 (A launcher is also provided: `run.cmd` on Windows, `run.sh` on POSIX — e.g.
 `run.sh --status`.) `--status` is the default, so running with no arguments does the same.
 
+**Always launch it in the background** (the Bash tool's `run_in_background: true`). The
+sync folder is usually a cloud drive, and when the drive client is unwell the engine blocks
+in a kernel filesystem read for minutes; a foreground run holds the whole turn hostage so
+the user cannot ask you to investigate while it hangs. Backgrounding costs nothing on a
+fast run and keeps you reachable on a slow one.
+
+**The 30-second check (do this every run).** A healthy scan reaches its first output within
+a few seconds, so if the run has not finished at ~30s, check on it rather than waiting. The
+engine heartbeats to **stderr** while scanning (`[scan] claude-memory (up): 1840 files`);
+`--no-progress` suppresses it. Read the background output at ~30s and again ~10s later: if
+the counter is advancing it is healthy, just large; if the last `[scan]` line is identical
+across both samples (or absent entirely) it is **stalled — raise the alarm**. The last line
+names the phase it wedged in. The counter only ticks in the per-file loop, so a big folder
+can go quiet inside the directory walk and look stalled — a reason to ask the user to
+glance at the drive, never a reason to keep silently waiting.
+
+When stalled, suspect the drive rather than the engine. The
+drive can be running yet functionally dead (e.g. Google Drive stuck on "checking for
+updates"), so a process/PID check will falsely report health, and `Test-Path` on the folder
+is only cached metadata — an actual byte read of a file under the sync folder is the one
+meaningful check. The fix is to force-restart the drive client (Task Manager → end the
+process → relaunch), then retry; waiting it out may never resolve. Retrying is safe — this
+mode writes nothing. Do not chase git, tool hints, or stdin; those have been ruled out.
+
 ## What to do
 
 1. Run the engine in status mode and show the user the output. It prints, for **both**
