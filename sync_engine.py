@@ -29,10 +29,12 @@ import os
 import platform
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -454,9 +456,58 @@ def classify(direction, has_local, has_sync, lm, sm, in_baseline, bm):
     return "absent"
 
 
-def compute_plan(direction, cfg, baseline) -> "list[Action]":
+PROGRESS_INTERVAL = 2.0  # seconds between heartbeat lines
+
+
+class Progress:
+    """Scan heartbeat on stderr.
+
+    compute_plan is otherwise silent for its entire duration, which makes a hung
+    cloud drive look identical to a large healthy sync - you cannot tell "slow"
+    from "stopped" without a counter that moves. Two details matter:
+
+    * stderr, not stdout: stdout carries the plan that callers parse.
+    * explicit flush: stdout/stderr are block-buffered when piped rather than
+      attached to a tty, so an unflushed heartbeat would sit in a 8KB buffer and
+      reach a background reader only at exit - exactly when it is useless.
+    """
+
+    def __init__(self, enabled=False, interval=PROGRESS_INTERVAL, stream=None):
+        self.enabled = enabled
+        self.interval = interval
+        self.stream = stream if stream is not None else sys.stderr
+        self.label = ""
+        self.count = 0
+        self._last = 0.0
+
+    def start(self, label):
+        """Announce a phase. Always emits: if the scan wedges inside this phase,
+        this line is the last thing printed and so names where it stopped."""
+        self.label = label
+        self.count = 0
+        self._emit(force=True)
+
+    def tick(self, n=1):
+        self.count += n
+        self._emit()
+
+    def _emit(self, force=False):
+        if not self.enabled:
+            return
+        now = time.monotonic()
+        if not force and (now - self._last) < self.interval:
+            return
+        self._last = now
+        self.stream.write("[scan] {}: {} files\n".format(self.label, self.count))
+        self.stream.flush()
+
+
+def compute_plan(direction, cfg, baseline, progress=None) -> "list[Action]":
+    progress = progress or Progress(enabled=False)
     actions: list[Action] = []
     for item in build_manifest(cfg):
+        # Emitted before the walk: enumerate_side itself can wedge on a sick drive.
+        progress.start("{} ({})".format(item.id, direction))
         local = enumerate_side(item.local, item.kind, item.exclude)
         upstream = enumerate_side(item.sync, item.kind, item.exclude)
         # Pair the two sides in the CANONICAL namespace. The folder side is already
@@ -464,6 +515,7 @@ def compute_plan(direction, cfg, baseline) -> "list[Action]":
         # item except memory, and for memory too when no root map is configured).
         local_by_canon = {item.to_canon(rel): rel for rel in local}
         for canon in sorted(set(local_by_canon) | set(upstream)):
+            progress.tick()  # each iteration stat()s - the call that hangs
             regkey = "{}/{}".format(item.id, canon)
             has_local = canon in local_by_canon
             has_sync = canon in upstream
@@ -1004,9 +1056,59 @@ def write_folder_readme(sync_root: Path):
 # --------------------------------------------------------------------------- #
 # GitHub version check
 # --------------------------------------------------------------------------- #
-def git(args, cwd):
-    return subprocess.run(["git"] + args, cwd=str(cwd),
-                          capture_output=True, text=True)
+GIT_TIMEOUT = 20  # seconds; network ops (fetch) are the slow case
+GIT_TIMEOUT_RC = 124  # conventional shell timeout(1) exit code
+
+
+def _kill_tree(proc):
+    """Kill proc and its descendants.
+
+    git delegates network work to helpers (git-remote-https, ssh). Killing only
+    the direct child leaves those helpers alive holding the stdout/stderr pipes,
+    and the follow-up communicate() then blocks until they exit anyway - which
+    is the very hang the timeout exists to prevent.
+    """
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                       capture_output=True)
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # proc leads its own group
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    proc.kill()  # no-op if already dead; ensures we reap
+
+
+def git(args, cwd, timeout=GIT_TIMEOUT):
+    """Run git non-interactively with a hard wall-clock timeout.
+
+    A credential prompt would otherwise block forever and invisibly, since the
+    prompt is swallowed by the captured pipes. A timeout is reported as a
+    non-zero returncode so callers' existing failure paths handle it.
+    """
+    env = dict(os.environ,
+               GIT_TERMINAL_PROMPT="0",   # never prompt for username/password
+               GCM_INTERACTIVE="never",   # Git Credential Manager: no GUI prompt
+               GIT_ASKPASS="",            # no askpass helper
+               SSH_ASKPASS="")
+    env.pop("GIT_CONFIG_PARAMETERS", None)
+    kw = {} if os.name == "nt" else {"start_new_session": True}
+    proc = subprocess.Popen(["git"] + args, cwd=str(cwd),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            stdin=subprocess.DEVNULL, text=True, env=env, **kw)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(["git"] + args, proc.returncode,
+                                           out, err)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        return subprocess.CompletedProcess(
+            ["git"] + args, GIT_TIMEOUT_RC, stdout="",
+            stderr="git timed out after {}s".format(timeout))
 
 
 def version_check(skill_dir: Path):
@@ -1115,7 +1217,8 @@ def cmd_status(args):
     baseline = load_baseline(Path(cfg["claudeHome"]))
     first_sync = not baseline
     for direction in ("up", "down"):
-        actions = compute_plan(direction, cfg, baseline)
+        actions = compute_plan(direction, cfg, baseline,
+                               Progress(enabled=not args.no_progress))
         print(render_plan(direction, cfg, actions, first_sync))
         print()
     definition = load_definition(Path(cfg["syncRoot"]))
@@ -1134,7 +1237,8 @@ def cmd_sync(args, direction):
     home = Path(cfg["claudeHome"])
     baseline = load_baseline(home)
     first_sync = not baseline
-    actions = compute_plan(direction, cfg, baseline)
+    actions = compute_plan(direction, cfg, baseline,
+                           Progress(enabled=not args.no_progress))
     print(render_plan(direction, cfg, actions, first_sync))
 
     if not args.apply:
@@ -1336,6 +1440,8 @@ def build_parser():
                    help="allow pushing secret files (.env) to the folder")
     p.add_argument("--no-tool-hints", action="store_true",
                    help="down: skip scanning pulled transcripts for tool-install reminders")
+    p.add_argument("--no-progress", action="store_true",
+                   help="suppress the [scan] heartbeat on stderr")
     p.add_argument("--no-git-hints", action="store_true",
                    help="down: skip checking whether project repos are behind their remote")
     p.add_argument("--claude-home", help="override the Claude home directory")

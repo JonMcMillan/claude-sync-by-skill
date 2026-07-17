@@ -13,6 +13,52 @@ the sibling `sync-envs` skill folder.
 - **Windows:** `py -3 "<claudeSkillsDir>\sync-envs\sync_engine.py" <args>`
 - **macOS/Linux:** `python3 "<claudeSkillsDir>/sync-envs/sync_engine.py" <args>`
 
+**Always launch it in the background** (the Bash tool's `run_in_background: true`), for
+both previews and applies. The sync folder is usually a cloud drive, and when the drive
+client is unwell the engine blocks in a kernel filesystem read for minutes. A foreground
+run holds the whole turn hostage, so the user cannot ask you to investigate while it
+hangs — which is exactly when they most want to. Backgrounding costs nothing on a fast run
+(you are notified as soon as it exits) and keeps you reachable on a slow one.
+
+## The 30-second check (do this every run)
+
+A healthy scan reaches its first output within a few seconds. So: **if the run has not
+finished at ~30 seconds, check on it — do not keep waiting.**
+
+The engine emits a heartbeat to **stderr** while scanning:
+
+```
+[scan] claude-memory (down): 1840 files
+```
+
+Read the background output at ~30s, then again ~10s later, and compare:
+
+- **Line count/counter advancing** → healthy, just large. Say so and keep waiting.
+- **Last `[scan]` line identical across both samples** → **stalled. Raise the alarm now**
+  (see below). The last line also names the phase it wedged in.
+- **No `[scan]` lines at all** → it never got started; treat as stalled.
+
+One caveat before crying wolf: the counter only ticks in the per-file loop, so a large
+folder can sit quiet inside the directory walk for a stretch and look stalled. That is a
+reason to *ask the user to glance at the drive*, not to assume the worst — it is never a
+reason to keep silently waiting.
+
+## If it is stalled (usually the sync folder, not the engine)
+
+A run that stalls for minutes almost always means the cloud drive client is half-alive:
+directory listings still return filenames whose `stat()` then fails. The engine will
+eventually die with `FileNotFoundError [WinError 3]` on a path under the sync folder.
+
+- **Do not trust the drive's process being alive** — it can be running and functionally
+  dead (e.g. Google Drive stuck on "checking for updates"). A process/PID check will
+  happily report everything is fine. Ask the user to look at the drive client's own UI.
+- **Do not trust `Test-Path` / `os.path.exists` on the folder** — that is cached metadata
+  and proves nothing. Only an actual byte read of a file under the sync folder does.
+- **The fix is a force-restart of the drive client** (Task Manager → end the process →
+  relaunch the app), then retry. Waiting it out may never resolve.
+- **Retrying is safe.** A preview writes nothing, and an interrupted apply is resumable.
+- Do not go chasing git, tool hints, or stdin — those have been investigated and ruled out.
+
 ## Procedure (always preview first, then confirm)
 
 1. **Preview:** run with `--direction down` (no `--apply`). Show the user the summary:

@@ -281,5 +281,67 @@ class TestThreeWayConflict(Base):
         self.assertIsInstance(baseline["claude-plans/a.md"], float)
 
 
+class TestProgress(unittest.TestCase):
+    """The heartbeat exists to tell 'slow' apart from 'stopped' in a background run."""
+
+    class _Stream:
+        def __init__(self):
+            self.written = []
+            self.flushes = 0
+
+        def write(self, s):
+            self.written.append(s)
+
+        def flush(self):
+            self.flushes += 1
+
+        def text(self):
+            return "".join(self.written)
+
+    def test_disabled_by_default_writes_nothing(self):
+        s = self._Stream()
+        p = eng.Progress(stream=s)
+        p.start("memory")
+        p.tick()
+        self.assertEqual(s.text(), "")
+
+    def test_start_always_emits_and_flushes(self):
+        # The phase line must appear even if the scan wedges immediately after,
+        # since it is then the only clue to where it stopped. And it must be
+        # flushed: piped stderr is block-buffered, so an unflushed line would
+        # not reach a background reader until exit.
+        s = self._Stream()
+        p = eng.Progress(enabled=True, stream=s)
+        p.start("claude-memory (down)")
+        self.assertIn("claude-memory (down)", s.text())
+        self.assertGreater(s.flushes, 0)
+
+    def test_ticks_are_throttled_but_counted(self):
+        s = self._Stream()
+        p = eng.Progress(enabled=True, interval=3600, stream=s)
+        p.start("memory")
+        for _ in range(50):
+            p.tick()
+        self.assertEqual(p.count, 50)          # every file counted
+        self.assertEqual(len(s.written), 1)    # but only the start line emitted
+
+    def test_counter_advances_across_emits(self):
+        s = self._Stream()
+        p = eng.Progress(enabled=True, interval=0, stream=s)  # emit every tick
+        p.start("memory")
+        p.tick()
+        p.tick()
+        self.assertIn(": 1 files", s.text())
+        self.assertIn(": 2 files", s.text())
+
+    def test_start_resets_count_per_phase(self):
+        s = self._Stream()
+        p = eng.Progress(enabled=True, stream=s)
+        p.start("a")
+        p.tick(5)
+        p.start("b")
+        self.assertEqual(p.count, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
