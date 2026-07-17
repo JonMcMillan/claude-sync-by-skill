@@ -125,6 +125,27 @@ Relay each note, then for **each one** ask the user which they want (don't assum
 You can batch `--ack-notes "id1,id2,..."` for several "keep" decisions in one call. Run
 these engine calls in the background like the others.
 
+## Open tasks (read-only reminder)
+
+After the notes, if a task connector is configured **and** its MCP is available this
+session, show the user their still-open tasks in the configured project/section — a "here's
+what's still waiting for you" reminder as they sit down at this machine. This is the
+reverse of make-a-task: it reads *back* from the task app, it never creates or changes
+anything.
+
+- Use the connector from the `--show-task-connector` call above. Resolve the project by
+  name, then the section by name, then list the **open** tasks in that section only (for
+  Todoist: `find-projects` → `find-sections` → `find-tasks` filtered to that `sectionId`;
+  `find-tasks` already returns active/incomplete tasks). **Scope to the configured section**
+  — do not list the user's whole task app.
+- Show them plainly (content, and due date if set). Cap at ~15 lines; if there are more,
+  end with `(+N more in <section>)`.
+- If there are none, a one-liner ("No open tasks in <section>.") or silence is fine — don't
+  belabor it.
+- If no connector is configured, or its MCP isn't available here, **skip this entirely and
+  silently** — never nag about setting up a task app during a down.
+- Keep it read-only. Only if the user then asks should you complete or open a task.
+
 ## First sync
 
 If this machine is new to the folder, the preview is a full-environment analysis. Walk the
