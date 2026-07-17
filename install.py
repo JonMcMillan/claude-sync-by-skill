@@ -26,6 +26,8 @@ TOOL_FOLDER = "sync-envs"
 WRAPPERS = {
     "sync-env-up": "wrappers/sync-env-up.SKILL.md",
     "sync-env-down": "wrappers/sync-env-down.SKILL.md",
+    "sync-add-note": "wrappers/sync-add-note.SKILL.md",
+    "sync-notes": "wrappers/sync-notes.SKILL.md",
 }
 
 
@@ -97,7 +99,8 @@ def main(argv=None):
     engine_dir = ensure_engine(skills_dir)
     materialize_wrappers(skills_dir, engine_dir)
 
-    print("\nInstalled. Skills available: /sync-envs (status), /sync-env-up, /sync-env-down")
+    print("\nInstalled. Skills available: /sync-envs (status), /sync-env-up, "
+          "/sync-env-down, /sync-add-note, /sync-notes")
 
     if args.no_setup:
         print("Run setup later with:")

@@ -84,6 +84,67 @@ eventually die with `FileNotFoundError [WinError 3]` on a path under the sync fo
      i.e. code was pushed from another machine) — relay it and offer to run the shown
      `git pull --ff-only`, but only after the user agrees; never pull automatically, and
      heed the uncommitted-changes warning. `--no-git-hints` suppresses the check.
+   - **Cross-device notes** (see below). `--no-notes` suppresses them.
+
+## Cross-device notes
+
+After applying, the engine may print a **"Notes left on your other machines"** block —
+reminders the user left elsewhere with `/sync-add-note`. Each line is `[<id>] text
+(origin, age)`. They surface here because this machine didn't originate them and hasn't
+handled them yet; they never surface on the machine that wrote them.
+
+**First, check the task connector once** (it determines whether "make a task" is on the
+table): run `... sync_engine.py --show-task-connector`. It prints either `none` or a JSON
+object like `{"app":"todoist","project":"Claude","section":"sync-env-tasks"}`. This is a
+recorded *preference* — it does **not** guarantee the app is connected this session, so
+still confirm the MCP is actually available before relying on it (for Todoist, that the
+Todoist tools are present).
+
+Relay each note, then for **each one** ask the user which they want (don't assume):
+
+- **Make a task** — the note is something to do.
+  - *Connector configured and its MCP available:* create the task in that app, at the
+    configured project/section, resolving them **by name** at runtime (for Todoist:
+    `find-projects` for the project name → `find-sections` in it → `add-tasks` with the
+    resolved `sectionId`). Use the note text as the task content. Then link and resolve:
+    `... sync_engine.py --resolve-note "<id>" --note-task "<taskId>"`.
+  - *No connector configured (first use):* offer to set one up now. If the user picks an
+    app whose MCP is available (today: Todoist), resolve/confirm the project + section with
+    them, record it once with
+    `... --set-task-connector todoist --task-project "Claude" --task-section "sync-env-tasks"`,
+    then create the task as above. If they decline, just offer keep/resolve.
+  - *Connector configured but its MCP is NOT available here:* say so plainly and fall back
+    to keep/resolve — **never silently drop the note.**
+- **Keep it** — still relevant, act on it later. Run `... --ack-notes "<id>"` so it won't
+  nag again **on this machine** (it stays active for the user's other machines and in
+  `/sync-notes`).
+- **Resolve it** — done or no longer needed. **Confirm first** (this clears it on *every*
+  machine), then `... --resolve-note "<id>"`. It's recoverable — a tombstone is written,
+  nothing is hard-deleted.
+
+You can batch `--ack-notes "id1,id2,..."` for several "keep" decisions in one call. Run
+these engine calls in the background like the others.
+
+## Open tasks (read-only reminder)
+
+After the notes, if a task connector is configured **and** its MCP is available this
+session, show the user their still-open tasks in the configured project/section — a "here's
+what's still waiting for you" reminder as they sit down at this machine. This is the
+reverse of make-a-task: it reads *back* from the task app, it never creates or changes
+anything.
+
+- Use the connector from the `--show-task-connector` call above. Resolve the project by
+  name, then the section by name, then list the **open** tasks in that section only (for
+  Todoist: `find-projects` → `find-sections` → `find-tasks` filtered to that `sectionId`;
+  `find-tasks` already returns active/incomplete tasks). **Scope to the configured section**
+  — do not list the user's whole task app.
+- Show them plainly (content, and due date if set). Cap at ~15 lines; if there are more,
+  end with `(+N more in <section>)`.
+- If there are none, a one-liner ("No open tasks in <section>.") or silence is fine — don't
+  belabor it.
+- If no connector is configured, or its MCP isn't available here, **skip this entirely and
+  silently** — never nag about setting up a task app during a down.
+- Keep it read-only. Only if the user then asks should you complete or open a task.
 
 ## First sync
 
