@@ -35,6 +35,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,7 +47,8 @@ SYNC_FOLDER_TYPE = "claude-sync-by-skill"
 # The sync tool's own skill folders — always excluded from the synced skills set
 # (git-managed; keeps every machine on one engine version and keeps .git out of the
 # cloud-mirrored folder).
-TOOL_SKILL_FOLDERS = ["sync-envs", "sync-env-up", "sync-env-down"]
+TOOL_SKILL_FOLDERS = ["sync-envs", "sync-env-up", "sync-env-down",
+                      "sync-add-note", "sync-notes"]
 
 # Names never enumerated as syncable content.
 ALWAYS_SKIP_NAMES = {
@@ -56,6 +58,7 @@ ALWAYS_SKIP_NAMES = {
     ".sync-state.json",
     ".claude-sync.json",
     ".trash",
+    "notes",  # cross-device reminder store; engine-managed, not synced as content
 }
 
 
@@ -1054,6 +1057,224 @@ def write_folder_readme(sync_root: Path):
 
 
 # --------------------------------------------------------------------------- #
+# Cross-device notes
+# --------------------------------------------------------------------------- #
+# A note is a reminder left on one machine that surfaces on the OTHERS the next
+# time they pull. The store is engine-managed under <syncRoot>/notes/ and is
+# built for a dumb cloud mirror (Google Drive et al.) that will duplicate any
+# file two machines rewrite offline. So nothing is ever rewritten: every file
+# here is written once, by exactly one device, and "delete" means "add an
+# idempotent tombstone" - which cannot conflict.
+#
+#   notes/<id>.json            {id, origin, created, text}   (write-once, origin)
+#   notes/.resolved/<id>.json  {resolvedBy, resolvedAt, taskId?}  (write-once)
+#   notes/.ack/<device>.json   {"acked": [id, ...]}          (only <device> writes)
+#
+# A note is ACTIVE iff its file exists and no tombstone does. It SURFACES on a
+# device iff it is active, did not originate there, and that device has not
+# acked it. Ack keeps repeat pulls quiet without ever destroying the note; it
+# stays active for other devices and always shows in --list-notes.
+NOTES_CAP = 200  # defensive display/scan cap
+
+_last_seq = 0.0  # module-level: keeps seq strictly increasing within a process
+
+
+def _next_seq() -> float:
+    """A sort key that is best-effort wall-clock (for cross-machine ordering) but
+    strictly increasing within this process. time.time() alone is not enough:
+    on Windows/older Python its resolution is ~15ms, so two rapid notes get the
+    same value and their order collapses to the random uuid in the id."""
+    global _last_seq
+    now = time.time()
+    _last_seq = now if now > _last_seq else _last_seq + 1e-6
+    return _last_seq
+
+
+def notes_root(sync_root: Path) -> Path:
+    return Path(sync_root) / "notes"
+
+
+def _sanitize_id(note_id: str) -> str:
+    """Guard the on-disk filename: ids we mint are safe, but ids arriving via
+    --resolve-note/--ack-notes come from argv, so refuse path separators and
+    dots that could escape the notes dir."""
+    nid = (note_id or "").strip()
+    if not nid or "/" in nid or "\\" in nid or nid.startswith("."):
+        raise ValueError("invalid note id: {!r}".format(note_id))
+    return nid
+
+
+def new_note_id(device: str) -> str:
+    safe_dev = re.sub(r"[^A-Za-z0-9_-]", "-", device or "device")
+    return "{}--{}--{}".format(safe_dev, run_stamp(), uuid.uuid4().hex[:8])
+
+
+def add_note(sync_root: Path, device: str, text: str) -> dict:
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("note text is empty")
+    # `created` is second-resolution for display; `seq` is a sub-second wall-clock
+    # key so notes made within the same second still order by creation.
+    note = {"id": new_note_id(device), "origin": device,
+            "created": now_iso(), "seq": _next_seq(), "text": text}
+    atomic_write_json(notes_root(sync_root) / (note["id"] + ".json"), note)
+    return note
+
+
+def _resolved_ids(sync_root: Path) -> "set[str]":
+    d = notes_root(sync_root) / ".resolved"
+    if not d.is_dir():
+        return set()
+    return {p.stem for p in d.glob("*.json")}
+
+
+def load_active_notes(sync_root: Path) -> "list[dict]":
+    """Every active note (file present, no tombstone), oldest first. Ignores
+    malformed files rather than failing the whole run."""
+    d = notes_root(sync_root)
+    if not d.is_dir():
+        return []
+    resolved = _resolved_ids(sync_root)
+    notes = []
+    for p in sorted(d.glob("*.json"))[:NOTES_CAP]:
+        note = read_json(p)
+        if isinstance(note, dict) and note.get("id") and note["id"] not in resolved:
+            notes.append(note)
+    # (seq, id): seq orders within a second; id breaks any remaining tie stably.
+    notes.sort(key=lambda n: (n.get("seq", 0), n.get("id", "")))
+    return notes
+
+
+def _ack_path(sync_root: Path, device: str) -> Path:
+    safe_dev = re.sub(r"[^A-Za-z0-9_-]", "-", device or "device")
+    return notes_root(sync_root) / ".ack" / (safe_dev + ".json")
+
+
+def load_acked(sync_root: Path, device: str) -> "set[str]":
+    data = read_json(_ack_path(sync_root, device))
+    if isinstance(data, dict) and isinstance(data.get("acked"), list):
+        return set(data["acked"])
+    return set()
+
+
+def ack_notes(sync_root: Path, device: str, ids) -> None:
+    acked = load_acked(sync_root, device) | {_sanitize_id(i) for i in ids}
+    atomic_write_json(_ack_path(sync_root, device),
+                      {"acked": sorted(acked)})
+
+
+def notes_to_surface(sync_root: Path, device: str) -> "list[dict]":
+    """Active notes from OTHER devices that this device has not yet acked."""
+    acked = load_acked(sync_root, device)
+    return [n for n in load_active_notes(sync_root)
+            if n.get("origin") != device and n.get("id") not in acked]
+
+
+def resolve_note(sync_root: Path, device: str, note_id: str,
+                 task_id: str = None) -> bool:
+    """Tombstone a note. Idempotent: resolving an already-resolved note is a
+    no-op success. Returns False only if the note id is unknown."""
+    nid = _sanitize_id(note_id)
+    if not (notes_root(sync_root) / (nid + ".json")).exists():
+        return False
+    tomb = notes_root(sync_root) / ".resolved" / (nid + ".json")
+    if tomb.exists():
+        return True
+    payload = {"resolvedBy": device, "resolvedAt": now_iso()}
+    if task_id:
+        payload["taskId"] = task_id
+    atomic_write_json(tomb, payload)
+    return True
+
+
+def _fmt_age(created: str) -> str:
+    try:
+        then = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return "?"
+    secs = max(0, int((datetime.now(timezone.utc) - then).total_seconds()))
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if secs >= n:
+            return "{}{} ago".format(secs // n, unit)
+    return "just now"
+
+
+def render_notes_surfacing(notes) -> str:
+    if not notes:
+        return ""
+    lines = ["", "Notes left on your other machines (from {}):".format(
+        ", ".join(sorted({n.get("origin", "?") for n in notes})))]
+    for n in notes:
+        lines.append("  - [{}] {}  ({}, {})".format(
+            n["id"], n.get("text", ""), n.get("origin", "?"),
+            _fmt_age(n.get("created", ""))))
+    lines.append("  These carried over from another session. For each, you can make "
+                 "a task, keep it, or resolve it.")
+    return "\n".join(lines)
+
+
+def render_notes_list(notes, device: str) -> str:
+    if not notes:
+        return "No active notes."
+    lines = ["Active notes ({}):".format(len(notes))]
+    for n in notes:
+        here = "  (from this device)" if n.get("origin") == device else ""
+        lines.append("  - [{}] {}".format(n["id"], n.get("text", "")))
+        lines.append("      {}, {}{}".format(
+            n.get("origin", "?"), _fmt_age(n.get("created", "")), here))
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Task connector (a recorded preference, NOT a live integration)
+# --------------------------------------------------------------------------- #
+# The engine cannot reach an MCP task app (Todoist et al.) - that lives on the
+# Claude side and only the skill can call it. All the engine does is remember
+# WHICH app the user wants notes turned into tasks in, and where (project +
+# section), so every skill reads one canonical place. It lives in the shared
+# definition so the choice propagates to every machine; whether that app is
+# actually connected is a per-session check the skill makes at runtime.
+def load_task_connector(sync_root: Path):
+    """The configured connector {app, project?, section?} or None."""
+    definition = load_definition(sync_root) or {}
+    conn = definition.get("taskConnector")
+    return conn if isinstance(conn, dict) and conn.get("app") else None
+
+
+def set_task_connector(sync_root: Path, app, project=None, section=None):
+    """Record (or clear) the task connector in the shared definition. app of
+    "" / "none" clears it. Returns the stored dict, or None when cleared."""
+    definition = load_definition(sync_root)
+    if not isinstance(definition, dict):
+        raise ValueError("sync folder is not initialized")
+    app = (app or "").strip().lower()
+    if app in ("", "none"):
+        definition.pop("taskConnector", None)
+        save_definition(sync_root, definition)
+        return None
+    if not re.match(r"^[a-z0-9][a-z0-9_-]*$", app):
+        raise ValueError("invalid app name: {!r}".format(app))
+    conn = {"app": app}
+    if project and project.strip():
+        conn["project"] = project.strip()
+    if section and section.strip():
+        conn["section"] = section.strip()
+    definition["taskConnector"] = conn
+    save_definition(sync_root, definition)
+    return conn
+
+
+def render_task_connector(conn) -> str:
+    if not conn:
+        return "none"
+    where = conn.get("project", "?")
+    if conn.get("section"):
+        where += " / " + conn["section"]
+    return "{} ({})".format(conn["app"], where)
+
+
+# --------------------------------------------------------------------------- #
 # GitHub version check
 # --------------------------------------------------------------------------- #
 GIT_TIMEOUT = 20  # seconds; network ops (fetch) are the slow case
@@ -1304,6 +1525,121 @@ def cmd_sync(args, direction):
             if gnote:
                 print(gnote)
 
+        # Cross-device notes left elsewhere. Surface (once per device) but never
+        # mutate state here: the skill drives make-task / keep / resolve and calls
+        # back with --ack-notes / --resolve-note.
+        if not args.no_notes:
+            surfaced = notes_to_surface(sync_root, cfg["device"])
+            nnote = render_notes_surfacing(surfaced)
+            if nnote:
+                print(nnote)
+
+
+def cmd_add_note(args):
+    cfg = require_config(args)
+    text = args.add_note
+    try:
+        note = add_note(Path(cfg["syncRoot"]), cfg["device"], text)
+    except ValueError as exc:
+        print("ERROR: {}".format(exc))
+        return 2
+    print("Note added [{}] on {}.".format(note["id"], cfg["device"]))
+    print("It will surface on your other machines the next time they pull.")
+    return 0
+
+
+def cmd_list_notes(args):
+    cfg = require_config(args)
+    notes = load_active_notes(Path(cfg["syncRoot"]))
+    print(render_notes_list(notes, cfg["device"]))
+    return 0
+
+
+def cmd_resolve_note(args):
+    cfg = require_config(args)
+    try:
+        ok = resolve_note(Path(cfg["syncRoot"]), cfg["device"],
+                          args.resolve_note, task_id=args.note_task)
+    except ValueError as exc:
+        print("ERROR: {}".format(exc))
+        return 2
+    if not ok:
+        print("No such note: {}".format(args.resolve_note))
+        return 1
+    linked = " (linked to task {})".format(args.note_task) if args.note_task else ""
+    print("Resolved note {}{}.".format(args.resolve_note, linked))
+    return 0
+
+
+def cmd_ack_notes(args):
+    cfg = require_config(args)
+    ids = [i for i in (args.ack_notes or "").split(",") if i.strip()]
+    if not ids:
+        print("ERROR: --ack-notes needs a comma-separated list of note ids.")
+        return 2
+    try:
+        ack_notes(Path(cfg["syncRoot"]), cfg["device"], ids)
+    except ValueError as exc:
+        print("ERROR: {}".format(exc))
+        return 2
+    print("Acknowledged {} note(s) on {}.".format(len(ids), cfg["device"]))
+    return 0
+
+
+def cmd_show_task_connector(args):
+    cfg = require_config(args)
+    conn = load_task_connector(Path(cfg["syncRoot"]))
+    # Machine-readable for the skill: the connector JSON, or the literal `none`.
+    print(json.dumps(conn, sort_keys=True) if conn else "none")
+    return 0
+
+
+def cmd_set_task_connector(args):
+    cfg = require_config(args)
+    try:
+        conn = set_task_connector(Path(cfg["syncRoot"]), args.set_task_connector,
+                                  project=args.task_project, section=args.task_section)
+    except ValueError as exc:
+        print("ERROR: {}".format(exc))
+        return 2
+    print("Task connector cleared." if conn is None
+          else "Task connector set: {}.".format(render_task_connector(conn)))
+    return 0
+
+
+def prompt_task_connector(args, sync_root):
+    """Interactive only: offer to record a task connector for note->task. The
+    engine only stores the choice; the skills do the actual MCP work. Scripted
+    installs (--sync-root) leave whatever is already recorded untouched."""
+    if args.sync_root:
+        return
+    existing = load_task_connector(sync_root)
+    print("\n--- Task connector (optional) ---")
+    print("When a note surfaces on another machine, sync-env-down can offer to turn")
+    print("it into a task in your task app. Today only Todoist is wired up. This just")
+    print("records the choice; the app must be connected in Claude to actually use it.")
+    if existing:
+        print("Currently: {}.".format(render_task_connector(existing)))
+    default_app = (existing or {}).get("app", "todoist")
+    raw = ask("Task app [{}] (or 'none' to skip): ".format(default_app), default_app)
+    app = (raw or "").strip().lower()
+    if app in ("", "none"):
+        if existing:  # explicit opt-out clears a prior choice
+            set_task_connector(sync_root, "none")
+            print("Task connector cleared.")
+        return
+    project = ask("Project/list name [{}]: ".format(
+        (existing or {}).get("project", "Claude")),
+        (existing or {}).get("project", "Claude"))
+    section = ask("Section name [{}] (blank for none): ".format(
+        (existing or {}).get("section", "sync-env-tasks")),
+        (existing or {}).get("section", "sync-env-tasks"))
+    try:
+        conn = set_task_connector(sync_root, app, project=project, section=section)
+        print("Task connector set: {}.".format(render_task_connector(conn)))
+    except ValueError as exc:
+        print("Skipped: {}".format(exc))
+
 
 def prompt_work_root(args, existing, sync_root, device):
     """Resolve this machine's main working folder. --work-root wins; a scripted/AI
@@ -1400,6 +1736,7 @@ def cmd_setup(args):
     if not init_or_join_folder(sync_root, cfg, args.yes):
         sys.exit(2)
     ensure_main_work_root(sync_root, cfg)
+    prompt_task_connector(args, sync_root)
 
     save_config(cfg)
     print("\nWrote {}".format(config_path(home)))
@@ -1444,6 +1781,27 @@ def build_parser():
                    help="suppress the [scan] heartbeat on stderr")
     p.add_argument("--no-git-hints", action="store_true",
                    help="down: skip checking whether project repos are behind their remote")
+    p.add_argument("--no-notes", action="store_true",
+                   help="down: skip surfacing cross-device notes")
+    p.add_argument("--add-note", metavar="TEXT",
+                   help="leave a reminder that surfaces on your other machines")
+    p.add_argument("--list-notes", action="store_true",
+                   help="list all active cross-device notes")
+    p.add_argument("--resolve-note", metavar="ID",
+                   help="resolve (tombstone) a note by id")
+    p.add_argument("--note-task", metavar="TASKID",
+                   help="with --resolve-note: record the linked task id")
+    p.add_argument("--ack-notes", metavar="ID[,ID...]",
+                   help="mark notes handled on this device (won't re-surface here)")
+    p.add_argument("--show-task-connector", action="store_true",
+                   help="print the configured task connector (JSON) or 'none'")
+    p.add_argument("--set-task-connector", metavar="APP",
+                   help="record the task app for note->task (e.g. todoist; "
+                        "'none' clears)")
+    p.add_argument("--task-project", metavar="NAME",
+                   help="with --set-task-connector: project/list name")
+    p.add_argument("--task-section", metavar="NAME",
+                   help="with --set-task-connector: section name")
     p.add_argument("--claude-home", help="override the Claude home directory")
     p.add_argument("--sync-root", help="setup: sync folder path (non-interactive)")
     p.add_argument("--work-root",
@@ -1465,6 +1823,18 @@ def main(argv=None):
     if args.setup:
         cmd_setup(args)
         return 0
+    if args.add_note is not None:
+        return cmd_add_note(args)
+    if args.list_notes:
+        return cmd_list_notes(args)
+    if args.resolve_note is not None:
+        return cmd_resolve_note(args)
+    if args.ack_notes is not None:
+        return cmd_ack_notes(args)
+    if args.show_task_connector:
+        return cmd_show_task_connector(args)
+    if args.set_task_connector is not None:
+        return cmd_set_task_connector(args)
     if args.direction:
         cmd_sync(args, args.direction)
         return 0
