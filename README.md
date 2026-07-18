@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/social-card.png" alt="claude-sync-by-skill — one Claude Code environment across all your machines" width="820">
+</p>
+
 # claude-sync-by-skill
 
 **Unify your Claude Code environment across machines — memory, plans, settings, secrets,
@@ -39,6 +43,10 @@ credentials. Your choice of folder *is* your choice of security and transport.
 ---
 
 ## How it works
+
+<p align="center">
+  <img src="docs/images/flow.png" alt="Flow: your environment syncs up from one machine to a folder you mirror, and down onto another; a note left on one machine surfaces on the other." width="760">
+</p>
 
 There is **one unified environment**. The sync folder holds the shared canonical copy;
 each machine holds a working copy. The commands:
