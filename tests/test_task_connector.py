@@ -50,6 +50,13 @@ class TestTaskConnector(unittest.TestCase):
         self.assertNotIn("taskConnector",
                          json.loads(eng.definition_path(self.sync).read_text()))
 
+    def test_any_task_app_is_accepted_not_just_todoist(self):
+        # The connector must not hardcode Todoist: the engine records the choice,
+        # the skill drives whatever app's connector is present.
+        for app in ["things", "ticktick", "asana", "google-tasks"]:
+            eng.set_task_connector(self.sync, app, project="Inbox")
+            self.assertEqual(eng.load_task_connector(self.sync)["app"], app)
+
     def test_app_is_lowercased_and_validated(self):
         eng.set_task_connector(self.sync, "Todoist")
         self.assertEqual(eng.load_task_connector(self.sync)["app"], "todoist")
