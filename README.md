@@ -102,7 +102,7 @@ network. Suppress it with `--no-git-hints`.
 Leave yourself a reminder on one machine and pick it up on another. `/sync-add-note "fix
 the timeout flake before shipping"` on your desktop, and the next time your laptop runs
 `/sync-env-down` the note surfaces there — **not** on the desktop that wrote it. For each
-surfaced note you choose: **make a task** (created in your Todoist), **keep** it (stops
+surfaced note you choose: **make a task** (created in your task app), **keep** it (stops
 nagging on *this* machine, stays live for the others), or **resolve** it (clears it
 everywhere, after you confirm). `/sync-notes` lists everything currently active.
 
@@ -112,18 +112,20 @@ never produce a merge conflict, and "resolve" adds a recoverable tombstone rathe
 deleting anything. Notes are plaintext — don't put secrets in them. Suppress surfacing on a
 given down with `--no-notes`.
 
-**Task connector.** "Make a task" needs to know *which* task app to use. Setup offers to
-record one (today: Todoist), and if you skip it there, the first time you convert a note
-the skill asks once and saves your choice. The preference — app plus project/section name —
-lives in the shared folder so it propagates to every machine, but the app itself must be
-connected in Claude on a given machine to actually create tasks there; if it isn't, that
-machine just keeps the note. The engine only records the choice — it never talks to the
-task app; the skill does, over MCP.
+**Task connector.** "Make a task" needs to know *which* task app to use. It's app-agnostic:
+name whatever task app you use — Todoist, Things, TickTick, Asana, … — the only requirement
+is that the app has a connector (MCP) in Claude. Setup offers to record one, and if you skip
+it there, the first time you convert a note the skill asks once and saves your choice. The
+preference — app plus container/section name — lives in the shared folder so it propagates
+to every machine, but the app itself must be connected in Claude on a given machine to
+actually create tasks there; if it isn't, that machine just keeps the note. The engine only
+records the choice — it never talks to the task app; the skill does, over MCP, using
+whatever tools that app's connector provides.
 
 When a connector is set and connected, `sync-env-down` also shows your still-open tasks in
-that project/section as a read-only reminder when you pull — a "what's waiting for you" list
-alongside any new notes. It's scoped to the configured section, not your whole task app, and
-it's skipped silently when the app isn't connected on that machine.
+that container/section as a read-only reminder when you pull — a "what's waiting for you"
+list alongside any new notes. It's scoped to the configured section, not your whole task
+app, and it's skipped silently when the app isn't connected on that machine.
 
 ### Safety: overwrites and deletions are intentional and reviewed
 
