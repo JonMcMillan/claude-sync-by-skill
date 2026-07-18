@@ -16,7 +16,7 @@ others the next time they pull — optionally turning it into a task in your tas
 > This skill syncs only *Claude's* knowledge of a project (memory and transcripts), plus
 > your plans, settings, and skills — never the project itself.
 
-> **Status:** early, private development. Cross-platform (Windows/macOS/Linux), pure
+> **Status:** early development, public. Cross-platform (Windows/macOS/Linux), pure
 > Python 3 standard library, no dependencies.
 
 ---
