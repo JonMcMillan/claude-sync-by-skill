@@ -1,19 +1,22 @@
 # claude-sync-by-skill
 
 **Unify your Claude Code environment across machines — memory, plans, settings, secrets,
-and your skills — using just three skill commands.**
+and your skills — with a small set of skill commands, and leave yourself cross-device
+reminders.**
 
 You work on one machine, run **`/sync-env-up`** to push your environment to a shared
 **sync folder**, then run **`/sync-env-down`** on another machine to bring it over. The
 two machines stay one unified environment. **`/sync-envs`** shows a read-only preview of
-what would change, in either direction, without touching anything.
+what would change, in either direction, without touching anything. And with
+**`/sync-add-note`** you can leave yourself a reminder on one machine that surfaces on the
+others the next time they pull — optionally turning it into a task in your task app.
 
 > **What it does *not* do:** it does **not** sync the contents of your project folders.
 > Your code, files, repos, and `node_modules` are never touched — that's what git is for.
 > This skill syncs only *Claude's* knowledge of a project (memory and transcripts), plus
 > your plans, settings, and skills — never the project itself.
 
-> **Status:** early, private development. Cross-platform (Windows/macOS/Linux), pure
+> **Status:** early development, public. Cross-platform (Windows/macOS/Linux), pure
 > Python 3 standard library, no dependencies.
 
 ---
@@ -38,7 +41,7 @@ credentials. Your choice of folder *is* your choice of security and transport.
 ## How it works
 
 There is **one unified environment**. The sync folder holds the shared canonical copy;
-each machine holds a working copy. Three commands:
+each machine holds a working copy. The commands:
 
 | Command | Direction | What it does |
 |---|---|---|
