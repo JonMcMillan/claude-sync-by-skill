@@ -39,7 +39,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 SCHEMA_VERSION = 2
 MTIME_TOLERANCE = 2.0  # seconds; FAT/network-drive slack
 SYNC_FOLDER_TYPE = "claude-sync-by-skill"
