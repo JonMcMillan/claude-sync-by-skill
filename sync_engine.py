@@ -1616,24 +1616,26 @@ def prompt_task_connector(args, sync_root):
     existing = load_task_connector(sync_root)
     print("\n--- Task connector (optional) ---")
     print("When a note surfaces on another machine, sync-env-down can offer to turn")
-    print("it into a task in your task app. Today only Todoist is wired up. This just")
-    print("records the choice; the app must be connected in Claude to actually use it.")
+    print("it into a task in your task app - whichever one you use (Todoist, Things,")
+    print("TickTick, Asana, ...), as long as it has a connector in Claude. This just")
+    print("records your choice; the app must be connected in Claude to actually use it.")
     if existing:
         print("Currently: {}.".format(render_task_connector(existing)))
-    default_app = (existing or {}).get("app", "todoist")
-    raw = ask("Task app [{}] (or 'none' to skip): ".format(default_app), default_app)
+    default_app = (existing or {}).get("app", "")
+    raw = ask("Task app (e.g. todoist; blank/none to skip) [{}]: ".format(
+        default_app or "none"), default_app)
     app = (raw or "").strip().lower()
     if app in ("", "none"):
         if existing:  # explicit opt-out clears a prior choice
             set_task_connector(sync_root, "none")
             print("Task connector cleared.")
         return
-    project = ask("Project/list name [{}]: ".format(
-        (existing or {}).get("project", "Claude")),
-        (existing or {}).get("project", "Claude"))
-    section = ask("Section name [{}] (blank for none): ".format(
-        (existing or {}).get("section", "sync-env-tasks")),
-        (existing or {}).get("section", "sync-env-tasks"))
+    project = ask("Project/list to put tasks in [{}]: ".format(
+        (existing or {}).get("project", "none")),
+        (existing or {}).get("project", ""))
+    section = ask("Section/sub-list [{}] (blank for none): ".format(
+        (existing or {}).get("section", "none")),
+        (existing or {}).get("section", ""))
     try:
         conn = set_task_connector(sync_root, app, project=project, section=section)
         print("Task connector set: {}.".format(render_task_connector(conn)))
