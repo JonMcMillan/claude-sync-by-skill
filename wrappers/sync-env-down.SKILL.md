@@ -95,25 +95,44 @@ handled them yet; they never surface on the machine that wrote them.
 
 **First, check the task connector once** (it determines whether "make a task" is on the
 table): run `... sync_engine.py --show-task-connector`. It prints either `none` or a JSON
-object like `{"app":"todoist","project":"Claude","section":"sync-env-tasks"}`. This is a
-recorded *preference* — it does **not** guarantee the app is connected this session, so
-still confirm the MCP is actually available before relying on it (for Todoist, that the
-Todoist tools are present).
+object like `{"app":"<app>","project":"<project>","section":"<section>"}` — e.g.
+`{"app":"todoist","project":"Claude","section":"sync-env-tasks"}`. This is a recorded
+*preference* — it does **not** guarantee the app is connected this session, so still confirm
+the app is actually reachable before relying on it (see below).
+
+### Reaching the user's task app (any app, not just Todoist)
+
+The connector's `app` names whatever task app the user chose. Its create/list operations
+come from **that app's connector (MCP) in Claude**, and every app names its tools and models
+its containers differently — do not assume Todoist.
+
+- **Find the app's tools.** Look for connected tools belonging to `app` (search the
+  available tools by the app name; if they're deferred, load them with ToolSearch). If none
+  are connected in this session, the app is **not reachable here** — do not substitute a
+  different app.
+- **Map the containers.** Treat the configured `project` as the top-level container
+  (project / list / area / space — whatever that app calls it) and `section` as an optional
+  sub-container (section / heading / sub-list / label). Resolve them **by name** to whatever
+  ids that app needs; if the app has no sub-container concept, ignore `section`.
+- **Worked example — Todoist** (apply the same shape to any other app's equivalent tools):
+  `find-projects` for the project name → `find-sections` in it → `add-tasks` (create) or
+  `find-tasks` filtered to the resolved `sectionId` (list). `find-tasks` already returns
+  active/incomplete tasks.
 
 Relay each note, then for **each one** ask the user which they want (don't assume):
 
 - **Make a task** — the note is something to do.
-  - *Connector configured and its MCP available:* create the task in that app, at the
-    configured project/section, resolving them **by name** at runtime (for Todoist:
-    `find-projects` for the project name → `find-sections` in it → `add-tasks` with the
-    resolved `sectionId`). Use the note text as the task content. Then link and resolve:
+  - *Connector configured and the app reachable:* create the task in that app at the
+    configured container/section (per "Reaching the user's task app" above), using the note
+    text as the task content. Then link and resolve:
     `... sync_engine.py --resolve-note "<id>" --note-task "<taskId>"`.
-  - *No connector configured (first use):* offer to set one up now. If the user picks an
-    app whose MCP is available (today: Todoist), resolve/confirm the project + section with
-    them, record it once with
-    `... --set-task-connector todoist --task-project "Claude" --task-section "sync-env-tasks"`,
-    then create the task as above. If they decline, just offer keep/resolve.
-  - *Connector configured but its MCP is NOT available here:* say so plainly and fall back
+  - *No connector configured (first use):* offer to set one up now. Ask which task app they
+    use; if its connector is available this session, confirm the container + section with
+    them and record it once with
+    `... --set-task-connector "<app>" --task-project "<project>" --task-section "<section>"`
+    (section optional), then create the task as above. If they decline, just offer
+    keep/resolve.
+  - *Connector configured but the app is NOT reachable here:* say so plainly and fall back
     to keep/resolve — **never silently drop the note.**
 - **Keep it** — still relevant, act on it later. Run `... --ack-notes "<id>"` so it won't
   nag again **on this machine** (it stays active for the user's other machines and in
@@ -127,22 +146,21 @@ these engine calls in the background like the others.
 
 ## Open tasks (read-only reminder)
 
-After the notes, if a task connector is configured **and** its MCP is available this
-session, show the user their still-open tasks in the configured project/section — a "here's
-what's still waiting for you" reminder as they sit down at this machine. This is the
+After the notes, if a task connector is configured **and** the app is reachable this
+session, show the user their still-open tasks in the configured container/section — a
+"here's what's still waiting for you" reminder as they sit down at this machine. This is the
 reverse of make-a-task: it reads *back* from the task app, it never creates or changes
 anything.
 
-- Use the connector from the `--show-task-connector` call above. Resolve the project by
-  name, then the section by name, then list the **open** tasks in that section only (for
-  Todoist: `find-projects` → `find-sections` → `find-tasks` filtered to that `sectionId`;
-  `find-tasks` already returns active/incomplete tasks). **Scope to the configured section**
-  — do not list the user's whole task app.
+- List the app's **open** tasks scoped to the configured container/section, using that
+  app's own tools (see "Reaching the user's task app" above; for Todoist,
+  `find-tasks` filtered to the resolved `sectionId`). **Scope to the configured
+  container/section** — do not list the user's whole task app.
 - Show them plainly (content, and due date if set). Cap at ~15 lines; if there are more,
-  end with `(+N more in <section>)`.
-- If there are none, a one-liner ("No open tasks in <section>.") or silence is fine — don't
+  end with `(+N more)`.
+- If there are none, a one-liner ("No open tasks there.") or silence is fine — don't
   belabor it.
-- If no connector is configured, or its MCP isn't available here, **skip this entirely and
+- If no connector is configured, or the app isn't reachable here, **skip this entirely and
   silently** — never nag about setting up a task app during a down.
 - Keep it read-only. Only if the user then asks should you complete or open a task.
 

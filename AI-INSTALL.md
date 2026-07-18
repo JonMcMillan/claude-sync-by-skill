@@ -56,10 +56,12 @@ platform-appropriate Python (`python3` on macOS/Linux; `py -3` or `python` on Wi
    - Non-interactive setup **skips** the optional task-connector prompt (next step).
 
 7. **Optional — record a task connector.** Cross-device notes can be turned into tasks in
-   the user's task app (today: Todoist). This preference lives in the shared folder, so it
-   only needs recording **once** across all the user's machines. If the user wants it and
-   hasn't set it elsewhere, ask which app and where, then:
-   `python3 "<skills>/sync-envs/sync_engine.py" --set-task-connector todoist --task-project "<project>" --task-section "<section>"`
+   the user's task app. It is **app-agnostic** — Todoist, Things, TickTick, Asana, etc. — the
+   only requirement is that the app has a connector (MCP) in Claude. This preference lives in
+   the shared folder, so it only needs recording **once** across all the user's machines. If
+   the user wants it and hasn't set it elsewhere, ask which app and where, then (substituting
+   their app / container names):
+   `python3 "<skills>/sync-envs/sync_engine.py" --set-task-connector "<app>" --task-project "<project>" --task-section "<section>"`
    Skip this if they're unsure — the first time they convert a note, the skill will ask and
    record it. The engine only stores the choice; the task app must be connected in Claude on
    a machine for note→task (and the open-tasks reminder on down) to work there.
